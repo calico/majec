@@ -1,0 +1,52 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "majec"
+version = "0.1.0"
+description = "Momentum-Accelerated Junction-Enhanced Counting Ecosystem"
+authors = ["Ari J. Firestone <arijfire@alumni.stanford.edu>"]
+license = "Apache-2.0"
+readme = "README.md"
+
+# --- DEPENDENCY DEFINITIONS ---
+# All dependencies, including optional ones, are defined here.
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# --- Core Dependencies ---
+numpy = "^2.3"
+pandas = "^2.3"
+
+# --- Optional Dependencies ---
+# They are defined here but marked as "optional".
+# They will only be installed if an "extra" group calls them.
+intervaltree = { version = "^3.1", optional = true }
+polars = { version = ">=1.33", optional = true }
+plotly = { version = ">=6.3", optional = true }
+python-kaleido = { version = ">=1.0", optional = true }
+pypdf2 = { version = ">=3.0", optional = true }
+scipy = { version = ">=1.16", optional = true }
+pytest = { version = "^8.0", optional = true } # For development
+
+# --- OPTIONAL DEPENDENCY GROUPS ("EXTRAS") ---
+# This section now contains ONLY the names of the packages.
+# The versions are managed in the section above.
+[tool.poetry.extras]
+database = ["polars"]
+viz = ["plotly", "python-kaleido", "pypdf2", "xlsxwriter"]
+tools = ["scipy"]
+full_analysis = ["polars", "plotly", "python-kaleido", "pypdf2", "scipy", "intervaltree"]
+dev = ["pytest"]
+
+# --- SCRIPT ENTRY POINTS ---
+[tool.poetry.scripts]
+majec_run_pipeline = "majec.pipeline:main"
+majec_precompute_annotations = "majec.preprocess:main"
+majec_build_db = "majec.database:main"
+majec_add_norm_factors = "majec.tools.normalization:main"
+majec_prepare_deseq2 = "majec.analysis.deseq2:main"
+majec_visualize = "majec.analysis.visualization:main"
+majec_calc_frag_len = "majec.tools.fragment_lengths:main"
+majec_calc_thresholds = "majec.tools.thresholds:main"

@@ -1,0 +1,201 @@
+# MAJEC Project .gitignore
+
+# ============================================================================
+# Sequencing Data Files (NEVER commit these - they're huge!)
+# ============================================================================
+*.bam
+*.bai
+*.sam
+*.cram
+*.crai
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.fa.gz
+*.fasta.gz
+
+# BED/GTF files (unless small reference files you need)
+# Uncomment these if you want to exclude large annotations:
+# *.bed
+# *.gtf
+# *.gff
+# *.gff3
+
+# ============================================================================
+# MAJEC-specific outputs and databases
+# ============================================================================
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Results and output directories
+results/
+outputs/
+cache/
+temp/
+tmp/
+
+# Plots and figures (commit only final publication-ready ones)
+plots/
+figures/
+*.png
+*.pdf
+*.svg
+# If you want to keep some plots, use: git add -f specific_plot.png
+
+# ============================================================================
+# Python
+# ============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+# If you want to keep notebooks: git add -f analysis.ipynb
+
+# ============================================================================
+# Virtual Environments
+# ============================================================================
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+conda_env/
+.conda/
+
+# ============================================================================
+# SLURM
+# ============================================================================
+slurm-*.out
+slurm-*.err
+*.log
+*.err
+*.out
+
+# ============================================================================
+# IDEs and Editors
+# ============================================================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================================
+# Operating System
+# ============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# ============================================================================
+# Configuration files with personal/local settings
+# ============================================================================
+local_config.yml
+local_config.yaml
+local_settings.py
+.env
+.env.local
+
+# ============================================================================
+# Large reference files (if you download genomes/annotations locally)
+# ============================================================================
+# Uncomment if you store references in your repo:
+# references/
+# genomes/
+# annotations/
+
+# ============================================================================
+# Temporary analysis files
+# ============================================================================
+*.tmp
+*.temp
+scratch/
+sandbox/
+
+# ============================================================================
+# Documentation builds
+# ============================================================================
+docs/_build/
+docs/.doctrees/
+site/
+
+# ============================================================================
+# Compressed archives (usually data)
+# ============================================================================
+*.tar.gz
+*.zip
+*.7z
+*.rar

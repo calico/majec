@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------
+# Official Conda environment for the MAJEC RNA-seq ecosystem
+#
+# This file contains a locked, tested set of compatible package versions.
+#
+# To create this environment, run:
+#   mamba env create -f majec.yml  (Recommended)
+#   OR
+#   conda env create -f majec.yml
+#
+# Then, activate it and install the MAJEC package:
+#   conda activate majec
+#   pip install -e .
+# -----------------------------------------------------------------
+
+name: majec
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # --- External Command-Line Tools ---
+  - subread>=2.0
+  - samtools=1.22.1
+  - bedtools=2.31.1
+  - sqlite=3.50.4
+
+  # --- Python and Core Libraries ---
+  - python=3.11.13
+  - numpy=2.3.3
+  - pandas=2.3.2
+  - scipy=1.16.2
+  - polars=1.33.1
+  
+  # --- Python Libraries for Optional Features ---
+  - intervaltree=3.1.0
+  - plotly=6.3.0
+  - python-kaleido=1.0.0
+  - pypdf2=3.0.1
+  - xlsxwriter
+
+  # --- Pip for local package installation ---
+  - pip
