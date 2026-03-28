@@ -1,6 +1,6 @@
 # MAJEC
 
-![MAJEC Joint Gene and TE Quantification Workflow](/images/<img width="2816" height="1536" alt="Gemini_Generated_Image_7e14am7e14am7e14" src="https://github.com/user-attachments/assets/c3a50e27-7bf0-45b5-9e23-8aa55d3551a3" />
+(/images/<img width="2816" height="1536" alt="Gemini_Generated_Image_7e14am7e14am7e14" src="https://github.com/user-attachments/assets/c3a50e27-7bf0-45b5-9e23-8aa55d3551a3" />
 )
 
 **Momentum-Accelerated Junction-Enhanced Counting** — unified gene, isoform, and locus-level transposable element quantification from RNA-seq.
