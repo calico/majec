@@ -1184,9 +1184,14 @@ def _apply_subset_penalties(sample_name, modified_counts, prior_tracking, initia
         expression_scale_factor=expression_scale,
     )
 
-    logging.info(f"    [{sample_name}] calculating coverage-based adjustments to subset penalties...")
-    territory_evidence = calculate_territory_adjustment_factors(
-        special_feature_counts, pipeline_context.get('subset_coverage_territory_mapping', {}))
+    territory_mapping = pipeline_context.get('subset_coverage_territory_mapping', {})
+    if territory_mapping and len(special_feature_counts) > 0:
+        logging.info(f"    [{sample_name}] calculating coverage-based adjustments to subset penalties...")
+        territory_evidence = calculate_territory_adjustment_factors(
+            special_feature_counts, territory_mapping)
+    else:
+        logging.info(f"    [{sample_name}] no territory data, skipping coverage-based adjustments")
+        territory_evidence = {}
 
     logging.info(f"    [{sample_name}] Applying combined subset penalties with penalty combination...")
 
@@ -1610,15 +1615,15 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
                 f"({n_active/n_total*100:.1f}% of {n_total:,} total)")
     
     if args.output_tpm:
-
         length_vector = prepare_length_vector(
             sample_name,
             bam_path,
             args,
             _transcript_info, # Use the global transcript_info map
-            #all_feature_ids, 
             list(active_features),
         )
+    else:
+        length_vector = None
         
 
 
