@@ -1061,9 +1061,9 @@ def run_featurecounts_with_junctions_encoded(
     report_flag = f"-R {report_format}" if report_format else ""
 
     cmd = (
-        f"featureCounts -a {combined_gtf} -o {output_path} -s {strandedness} "
+        f'featureCounts -a "{combined_gtf}" -o "{output_path}" -s {strandedness} '
         f"-T {threads} -t exon -g transcript_id {paired_end_flag} {extra_args} "
-        f"{report_flag} {junction_flag} {' '.join(bam_files)}"
+        f'{report_flag} {junction_flag} {" ".join(f\'"{b}"\' for b in bam_files)}'
     )
 
     logging.info(f"  ... featureCounts command: {cmd}")
@@ -1960,13 +1960,13 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
         multi_bam = os.path.join(temp_dir, f"{sample_name}_multi_mappers.bam")
         filter_expr = "mapq < 30"
         safe_subprocess_run(
-            f"samtools view -h -@ {threads_per_worker} -e '{filter_expr}' -o {multi_bam} {bam_path}",
+            f'samtools view -h -@ {threads_per_worker} -e \'{filter_expr}\' -o "{multi_bam}" "{bam_path}"',
             "filtering for multi-mappers",
         )
 
         # Check if multi-mapper BAM has any reads
         read_count = int(
-            subprocess.check_output(f"samtools view -c {multi_bam}", shell=True).strip()
+            subprocess.check_output(f'samtools view -c "{multi_bam}"', shell=True).strip()
         )
 
         if read_count == 0:

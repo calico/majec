@@ -59,7 +59,7 @@ def run_featurecounts_for_sample(args_tuple):
 
         cmd = (
             f'featureCounts -a "{gtf_path}" -o "{output_path}" -s {args.strandedness} '
-            f'-T 1 -t exon -g transcript_id {paired_end_flag} -Q 30 -O --fraction"{bam_path}"'
+            f'-T 1 -t exon -g transcript_id {paired_end_flag} -Q 30 -O --fraction "{bam_path}"'
         )
 
         subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)

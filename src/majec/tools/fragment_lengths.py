@@ -36,7 +36,7 @@ def get_cDNA_fragment_stats(
     correct_path = os.environ["PATH"]
     cmd = (
         f"export PATH='{correct_path}' && "
-        f"samtools view -f 2 {bam_path} | "
+        f'samtools view -f 2 "{bam_path}" | '
         f"awk 'BEGIN{{OFS=\"\\t\"}} $6 !~ /N/ && $9 > {min_len} && $9 < {max_len} {{print $9}}' | "
         f"tail -n +{num_to_skip + 1} | "
         f"head -n {num_pairs_to_sample} | "

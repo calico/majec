@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "majec"
-version = "0.1.0"
+version = "0.1.1"
 description = "Momentum-Accelerated Junction-Enhanced Counting Ecosystem"
 authors = ["Ari J. Firestone <arijfire@alumni.stanford.edu>"]
 license = "Apache-2.0"
