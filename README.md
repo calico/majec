@@ -32,6 +32,12 @@ conda activate majec
 pip install -e .
 ```
 
+### bioconda
+
+```bash
+conda install bioconda::majec
+```
+
 ### Dependencies
 
 Installed automatically via the conda environment:
