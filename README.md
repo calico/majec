@@ -23,6 +23,8 @@ Approximately 45% of the human genome consists of TEs, many of which are embedde
 - **Fast**: momentum-accelerated EM typically converges in ~15 iterations; multiprocessing across samples
 
 ## Installation
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/majec/README.html)
+
 
 ### From source
 
