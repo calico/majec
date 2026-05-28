@@ -1,0 +1,19 @@
+#!/bin/bash
+REFDIR=/home/User/...
+
+# Convert UCSC rmsk.txt e.g, from "wget https://hgdownload.soe.ucsc.edu/goldenPath/mm39/database/rmsk.txt.gz" to GTF same pattern for other genomes i.e., hg38
+# Columns: bin, swScore, milliDiv, milliDel, milliIns, genoName, genoStart, genoEnd, genoLeft, strand, repName, repClass, repFamily, repStart, repEnd, repLeft, id
+zcat ${REFDIR}/rmsk.txt.gz | awk 'BEGIN{OFS="\t"} {
+    start = $7 + 1;
+    attr = "gene_id \"" $11 "\"; transcript_id \"" $11 "_dup" NR "\"; family_id \"" $13 "\"; class_id \"" $12 "\";";
+    print $6, "mm39_rmsk", "exon", start, $8, $2, $10, ".", attr
+}' > ${REFDIR}/mm39_rmsk.gtf
+
+# Filter out Simple_repeat and Low_complexity (if you dont think you want them)
+grep -v 'class_id "Simple_repeat"' ${REFDIR}/mm39_rmsk.gtf \
+    | grep -v 'class_id "Low_complexity"' \
+    > ${REFDIR}/mm39_rmsk_filtered.gtf
+
+echo "Conversion done."
+echo "Total TEs: $(wc -l < ${REFDIR}/mm39_rmsk.gtf)"
+echo "After filtering: $(wc -l < ${REFDIR}/mm39_rmsk_filtered.gtf)"
