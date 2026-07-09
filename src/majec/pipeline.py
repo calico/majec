@@ -175,6 +175,37 @@ def encode_transcript_ids(data, string_to_int, copy=True):
     return data
 
 
+def write_te_locus_coordinates(transcript_info, int_to_string, te_map, prefix):
+    """Write a TSV of genomic coordinates for each individual TE locus."""
+    if te_map is None or transcript_info is None:
+        return None
+    subfamily_by_locus = dict(zip(te_map["LocusID"], te_map["AggregateID"]))
+    rows = []
+    for tid_int, info in transcript_info.items():
+        if info.get("feature_type") != "te":
+            continue
+        rows.append(
+            {
+                "locus_id": int_to_string[tid_int],
+                "chr": info.get("chr"),
+                "start": info.get("start"),
+                "end": info.get("end"),
+                "strand": info.get("strand"),
+                "subfamily": subfamily_by_locus.get(tid_int, ""),
+            }
+        )
+    if not rows:
+        return None
+    path = f"{prefix}_TE_locus_coordinates.tsv"
+    coord_df = pd.DataFrame(
+        rows, columns=["locus_id", "chr", "start", "end", "strand", "subfamily"]
+    )
+    coord_df = coord_df.sort_values(["chr", "start", "end"]).reset_index(drop=True)
+    coord_df.to_csv(path, sep="\t", index=False)
+    logging.info(f"TE locus coordinates saved to: {path} ({len(coord_df)} loci)")
+    return path
+
+
 def _aggregate_by_map(df, id_map):
     """Aggregate a DataFrame's rows using a LocusID -> AggregateID mapping."""
     mask = df.index.isin(id_map["LocusID"].values)
@@ -1961,7 +1992,7 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
         multi_bam = os.path.join(temp_dir, f"{sample_name}_multi_mappers.bam")
         filter_expr = "mapq < 30"
         safe_subprocess_run(
-            f'samtools view -h -@ {threads_per_worker} -e '
+            f"samtools view -h -@ {threads_per_worker} -e "
             f"'{filter_expr}'"
             f' -o "{multi_bam}" "{bam_path}"',
             "filtering for multi-mappers",
@@ -1969,7 +2000,9 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
 
         # Check if multi-mapper BAM has any reads
         read_count = int(
-            subprocess.check_output(f'samtools view -c "{multi_bam}"', shell=True).strip()
+            subprocess.check_output(
+                f'samtools view -c "{multi_bam}"', shell=True
+            ).strip()
         )
 
         if read_count == 0:
@@ -2821,6 +2854,14 @@ def build_argument_parser():
         help="Save EM equivalency classes for debugging",
     )
     output_group.add_argument(
+        "--te_coordinates",
+        action="store_true",
+        help="Write per-TE-locus genomic coordinates to "
+        "{prefix}_TE_locus_coordinates.tsv "
+        "(large: one row per TE locus, ~4.7M rows / ~260MB for hg38 rmsk; "
+        "off by default)",
+    )
+    output_group.add_argument(
         "--light",
         action="store_true",
         help="Light mode: skip prior tracking, confidence metrics, and verbose outputs "
@@ -3219,6 +3260,14 @@ def main():
         gene_map = pipeline_context["gene_map"]
         te_map = pipeline_context["te_map"]
 
+        if te_map is not None and args.te_coordinates:
+            write_te_locus_coordinates(
+                pipeline_context["transcript_info"],
+                int_to_string,
+                te_map,
+                args.prefix,
+            )
+
         if gene_map is not None:
             final_aggregated_counts = _aggregate_genes_and_tes(
                 final_total_counts, gene_map, te_map
@@ -3299,6 +3348,10 @@ def main():
             },
             "per_sample_files": run_file_map,
         }
+        if args.te_coordinates:
+            manifest_data["summary_files"]["te_locus_coordinates"] = os.path.abspath(
+                f"{args.prefix}_TE_locus_coordinates.tsv"
+            )
         # Add error handling in case some files weren't generated
         for key, path in manifest_data["summary_files"].items():
             if not os.path.exists(path):

@@ -4,6 +4,41 @@
 
 - `{prefix}_total_EM_counts.tsv` — Final transcript/locus-level expression estimates
 - `{prefix}_total_EM_aggregated_counts.tsv` — Gene and TE subfamily aggregated counts
+- `{prefix}_TE_locus_coordinates.tsv` — Genomic coordinates for each individual TE locus (only when `--te_coordinates` is set; see below)
+
+### TE Subfamily Naming
+
+TE counts are aggregated using a **`name:family:class`** composite identifier
+(e.g. `AluYa5:Alu:SINE`, `L1HS:L1:LINE`), matching the TEtranscripts convention.
+The composite ID disambiguates subfamily names that recur across classes — for
+example `MER121` exists in both the `TcMar` and `hAT` families — which a bare
+subfamily name would otherwise merge into a single, incorrect row.
+
+> **Note:** This naming is baked into the precomputed annotation. If you built
+> annotations with an older MAJEC version, **regenerate them with
+> `majec_precompute_annotations`** for the composite names (and the `subfamily`
+> column of the TE coordinate file) to take effect. The TE GTF must carry
+> `family_id` and `class_id` attributes (as in the standard TEtranscripts
+> `rmsk_TE.gtf`); loci lacking them fall back to the bare subfamily name.
+
+### TE Locus Coordinates (`_TE_locus_coordinates.tsv`)
+
+Written only when `--te_coordinates` is passed. Provides one row per individual
+TE locus so each quantified TE instance can be mapped back to the genome.
+**This table is large** — one row per TE locus in the annotation (~4.7M rows /
+~260 MB for the hg38 rmsk annotation) — so it is off by default.
+
+| Column | Description |
+|:-------|:------------|
+| `locus_id` | Individual TE locus ID; matches a row index in `_total_EM_counts.tsv` (e.g. `L1HS_dup1234`). |
+| `chr` | Chromosome. |
+| `start` | Locus start (1-based, inclusive; genomic bounds taken from the GTF). |
+| `end` | Locus end (1-based, inclusive). |
+| `strand` | `+` or `-`. |
+| `subfamily` | The `name:family:class` subfamily this locus aggregates into; matches a row in `_total_EM_aggregated_counts.tsv`. |
+
+Rows are sorted by `chr`, `start`, `end`. Join on `locus_id` to the locus-level
+counts, or on `subfamily` to the aggregated counts.
 
 ---
 

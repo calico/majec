@@ -135,12 +135,16 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
             # Extract IDs
             transcript_match = re.search(r'transcript_id "([^"]+)"', attributes)
             gene_match = re.search(r'gene_id "([^"]+)"', attributes)
+            family_match = re.search(r'family_id "([^"]+)"', attributes)
+            class_match = re.search(r'class_id "([^"]+)"', attributes)
 
             if not transcript_match:
                 continue
 
             transcript_id = transcript_match.group(1).strip()
             gene_id = gene_match.group(1).strip() if gene_match else transcript_id
+            family_id = family_match.group(1).strip() if family_match else None
+            class_id = class_match.group(1).strip() if class_match else None
 
             # For transcript features, extract TSL
             if feature == "transcript":
@@ -162,6 +166,8 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
                         "end": 0,
                         "feature_type": feature_type,
                         "tsl": tsl,
+                        "family_id": family_id,
+                        "class_id": class_id,
                     }
                 else:
                     # Update TSL if we found it
@@ -178,6 +184,8 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
                     "end": 0,
                     "feature_type": feature_type,
                     "tsl": "NA",  # Default if no TSL found
+                    "family_id": family_id,
+                    "class_id": class_id,
                 }
 
             # Update bounds and collect exons
@@ -307,8 +315,14 @@ def create_annotation_maps(gene_transcript_info, te_transcript_info, string_to_i
         te_map_data = []
         for tid, info in te_transcript_info.items():
             tid_int = string_to_int[tid]
-            te_family = info["gene_id"]  # For TEs, gene_id is actually the TE family
-            te_map_data.append([tid_int, te_family])
+            te_name = info["gene_id"]
+            family_id = info.get("family_id")
+            class_id = info.get("class_id")
+            if family_id and class_id:
+                te_aggregate_id = f"{te_name}:{family_id}:{class_id}"
+            else:
+                te_aggregate_id = te_name
+            te_map_data.append([tid_int, te_aggregate_id])
         te_map = pd.DataFrame(te_map_data, columns=["LocusID", "AggregateID"])
 
     return gene_map, te_map
