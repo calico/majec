@@ -629,23 +629,26 @@ def generate_deseq2_script_with_options(
         col_name = f"comp_{comp_name}"
         if batch_column:
             design_formula = f"~ {batch_column} + {col_name}"
-            # Ensure the batch column is also treated as a factor in R
-            r_script += f"""
-    coldata_subset${batch_column} <- as.factor(coldata_subset${batch_column})
-    """
         else:
             design_formula = f"~ {col_name}"
 
         r_script += f"""
-    
+
     # --- Comparison: {comp_name} ---
     cat("\\n--- Processing {comp_name} ---\\n")
-    
+
     # Subset to case/control samples
     coldata_subset <- coldata[coldata${col_name} != "other", ]
     cts_subset <- cts[, rownames(coldata_subset)]
     coldata_subset${col_name} <- factor(coldata_subset${col_name}, levels=c("control", "case"))
- 
+    """
+
+        if batch_column:
+            r_script += f"""
+    coldata_subset${batch_column} <- as.factor(coldata_subset${batch_column})
+    """
+
+        r_script += f"""
     # Standard DESeq2
     dds <- DESeqDataSetFromMatrix(
         countData = round(cts_subset),

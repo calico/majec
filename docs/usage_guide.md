@@ -57,6 +57,10 @@ Recommended configuration with all evidence-based priors and confidence metrics 
 
 `library_type` must match your experimental protocol for the completeness model to work correctly. Options: `dT`, `polyA`, `random`, `none`.
 
+### TE Locus Coordinates
+
+For gene+TE analyses, add `--te_coordinates` to write a per-locus coordinate file (`{prefix}_TE_locus_coordinates.tsv`). This is off by default because it is large (~4.7M rows / ~260 MB for hg38 rmsk). See [Output Files](output_files.md#te-locus-coordinates-_te_locus_coordinatestsv) for column details.
+
 ---
 
 ## Utility Tools
