@@ -1,5 +1,7 @@
 """Tests for refactored pipeline helper functions."""
 
+import sys
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -15,6 +17,7 @@ from majec.pipeline import (
     _apply_junction_boosts,
     _apply_tsl_penalties,
     build_argument_parser,
+    parse_args_with_config,
     validate_args,
 )
 
@@ -391,11 +394,15 @@ class TestBuildArgumentParser:
         parser = build_argument_parser()
         assert parser is not None
 
-    def test_required_args(self):
+    def test_required_args(self, monkeypatch):
+        # --annotation and --bams are not required=True on the parser, because
+        # either may come from --config instead. parse_args_with_config is what
+        # enforces them, so that is what has to be exercised; asserting on the
+        # bare parser passed vacuously and this test failed from v0.1.0 on.
         parser = build_argument_parser()
-        # Should fail without required args
+        monkeypatch.setattr(sys, 'argv', ['majec_run_pipeline'])
         with pytest.raises(SystemExit):
-            parser.parse_args([])
+            parse_args_with_config(parser)
 
     def test_defaults(self):
         parser = build_argument_parser()
