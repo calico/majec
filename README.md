@@ -136,8 +136,8 @@ Run `majec_run_pipeline --help` or `majec_precompute_annotations --help` for the
 
 If you use MAJEC in your research, please cite:
 
-> Lim, T.-Y. & Firestone, A.J. (2026) MAJEC: unified gene, isoform, and locus-level transposable element quantification from RNA-seq. *bioRxiv*.
-
+> Lim, T.-Y. & Firestone, A.J. (2026) MAJEC: unified gene, isoform, and locus-level transposable element quantification from RNA-seq. *Bioinformatics*, 42(10). https://doi.org/10.1093/bioinformatics/btag737
+> 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
