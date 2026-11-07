@@ -1,0 +1,19 @@
+[package]
+name = "majec-core"
+version = "0.2.0"
+edition = "2021"
+description = "High-performance EqC builder for MAJEC RNA-seq quantification"
+
+[lib]
+name = "majec_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
+noodles = { version = "0.96", features = ["bam", "sam", "bgzf"] }
+rustc-hash = "2"  # Fast hashing for integer keys
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

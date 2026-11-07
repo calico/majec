@@ -15,6 +15,12 @@
 *.fa.gz
 *.fasta.gz
 
+# ...except the committed test fixtures, which are deliberately tiny. Without
+# this, `git add tests/data/` silently drops the BAMs and every parity test
+# skips itself with "fixture missing" instead of failing.
+!tests/data/*.bam
+!tests/data/*.sam
+
 # BED/GTF files (unless small reference files you need)
 # Uncomment these if you want to exclude large annotations:
 # *.bed
@@ -35,6 +41,10 @@
 results/
 outputs/
 cache/
+# cache/ matches only a directory named exactly "cache", so the pipeline's own
+# per-sample EqC cache was never covered - 221 MB of .pkl that `git add -A`
+# would happily stage.
+pipeline_cache/
 temp/
 tmp/
 

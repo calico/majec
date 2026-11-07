@@ -1,0 +1,89 @@
+# Build and publish prebuilt wheels for majec-core, the compiled (Rust) EqC builder.
+#
+# majec itself is pure Python and installs everywhere. It falls back to the
+# pysam builder when majec-core is absent (same results, ~6x slower BAM scan),
+# so these wheels are the fast path, installed with `pip install "majec[rust]"`.
+#
+# Runs on every push/PR that touches the crate (build + import smoke test) and
+# publishes to PyPI when a tag `majec-core-v<version>` is pushed. Jobs run only
+# in the public repository (calico/majec); private mirrors have no macOS
+# runners and should not publish. Publishing
+# uses PyPI trusted publishing: configure the project on PyPI to trust this
+# repository and workflow, and no API token is needed.
+name: majec-core wheels
+
+on:
+  push:
+    paths: ["rust/majec-core/**", ".github/workflows/majec-core-wheels.yml"]
+    tags: ["majec-core-v*"]
+  pull_request:
+    paths: ["rust/majec-core/**", ".github/workflows/majec-core-wheels.yml"]
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: wheels (${{ matrix.os }}, ${{ matrix.target }})
+    if: github.repository == 'calico/majec'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64 }
+          - { os: ubuntu-latest, target: aarch64 }
+          - { os: macos-14, target: aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.11
+            3.12
+            3.13
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: rust/majec-core
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter 3.11 3.12 3.13
+          manylinux: auto
+      - name: Import smoke test
+        if: matrix.target == 'x86_64'
+        run: |
+          python -m pip install --no-index --find-links rust/majec-core/dist majec-core
+          python -c "import majec_core; print('majec_core imports:', majec_core.__file__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: rust/majec-core/dist
+
+  sdist:
+    if: github.repository == 'calico/majec'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: rust/majec-core
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: rust/majec-core/dist
+
+  publish:
+    if: github.repository == 'calico/majec' && startsWith(github.ref, 'refs/tags/majec-core-v')
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

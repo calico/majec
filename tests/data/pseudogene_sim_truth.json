@@ -1,0 +1,151 @@
+{
+  "sample": "sample_01",
+  "simulated_reads_per_transcript": {
+    "ENST00000323345.10": 1979,
+    "ENST00000477943.1": 5,
+    "ENST00000388968.7": 1686,
+    "ENST00000503199.1": 5,
+    "ENST00000234875.8": 763,
+    "ENST00000418623.1": 2,
+    "ENST00000248437.8": 205,
+    "ENST00000530835.1": 2,
+    "ENST00000343262.8": 2116,
+    "ENST00000397318.4": 6,
+    "ENST00000340913.10": 231,
+    "ENST00000342073.4": 2,
+    "ENST00000274065.8": 1491,
+    "ENST00000487100.1": 2,
+    "ENST00000301821.10": 1040,
+    "ENST00000479228.1": 2,
+    "ENST00000229239.9": 7215,
+    "ENST00000452570.1": 8,
+    "ENST00000273550.11": 4786,
+    "ENST00000466086.2": 4,
+    "ENST00000370321.8": 1819,
+    "ENST00000426545.1": 7,
+    "ENST00000202773.13": 1473,
+    "ENST00000456481.1": 2
+  },
+  "pairs_meta": [
+    {
+      "parent_tx": "ENST00000323345.10",
+      "pseudo_tx": "ENST00000477943.1",
+      "parent_name": "RPL7A",
+      "pseudo_name": "RPL7AP6",
+      "parent_sim_reads": 40766,
+      "pseudo_sim_reads": 5,
+      "parent_tx_resolved": "ENST00000323345.11",
+      "pseudo_tx_resolved": "ENST00000477943.1"
+    },
+    {
+      "parent_tx": "ENST00000388968.7",
+      "pseudo_tx": "ENST00000503199.1",
+      "parent_name": "HSPD1",
+      "pseudo_name": "HSPD1P1",
+      "parent_sim_reads": 32431,
+      "pseudo_sim_reads": 4,
+      "parent_tx_resolved": "ENST00000388968.8",
+      "pseudo_tx_resolved": "ENST00000503199.1"
+    },
+    {
+      "parent_tx": "ENST00000234875.8",
+      "pseudo_tx": "ENST00000418623.1",
+      "parent_name": "RPL22",
+      "pseudo_name": "RPL22P1",
+      "parent_sim_reads": 13810,
+      "pseudo_sim_reads": 2,
+      "parent_tx_resolved": "ENST00000234875.9",
+      "pseudo_tx_resolved": "ENST00000418623.1"
+    },
+    {
+      "parent_tx": "ENST00000248437.8",
+      "pseudo_tx": "ENST00000530835.1",
+      "parent_name": "TUBA4A",
+      "pseudo_name": "TUBAP2",
+      "parent_sim_reads": 4683,
+      "pseudo_sim_reads": 3,
+      "parent_tx_resolved": "ENST00000248437.9",
+      "pseudo_tx_resolved": "ENST00000530835.1"
+    },
+    {
+      "parent_tx": "ENST00000343262.8",
+      "pseudo_tx": "ENST00000397318.4",
+      "parent_name": "RPS2",
+      "pseudo_name": "RPS2P55",
+      "parent_sim_reads": 42599,
+      "pseudo_sim_reads": 7,
+      "parent_tx_resolved": "ENST00000343262.9",
+      "pseudo_tx_resolved": "ENST00000397318.4"
+    },
+    {
+      "parent_tx": "ENST00000340913.10",
+      "pseudo_tx": "ENST00000342073.4",
+      "parent_name": "HNRNPA1",
+      "pseudo_name": "HNRNPA1P61",
+      "parent_sim_reads": 4462,
+      "pseudo_sim_reads": 2,
+      "parent_tx_resolved": "ENST00000340913.11",
+      "pseudo_tx_resolved": "ENST00000342073.4"
+    },
+    {
+      "parent_tx": "ENST00000274065.8",
+      "pseudo_tx": "ENST00000487100.1",
+      "parent_name": "RPS3A",
+      "pseudo_name": "RPS3AP47",
+      "parent_sim_reads": 30921,
+      "pseudo_sim_reads": 2,
+      "parent_tx_resolved": "ENST00000274065.9",
+      "pseudo_tx_resolved": "ENST00000487100.1"
+    },
+    {
+      "parent_tx": "ENST00000301821.10",
+      "pseudo_tx": "ENST00000479228.1",
+      "parent_name": "RPSA",
+      "pseudo_name": "RPSAP47",
+      "parent_sim_reads": 21077,
+      "pseudo_sim_reads": 2,
+      "parent_tx_resolved": "ENST00000301821.11",
+      "pseudo_tx_resolved": "ENST00000479228.1"
+    },
+    {
+      "parent_tx": "ENST00000229239.9",
+      "pseudo_tx": "ENST00000452570.1",
+      "parent_name": "GAPDH",
+      "pseudo_name": "GAPDHP1",
+      "parent_sim_reads": 145617,
+      "pseudo_sim_reads": 8,
+      "parent_tx_resolved": "ENST00000229239.10",
+      "pseudo_tx_resolved": "ENST00000452570.1"
+    },
+    {
+      "parent_tx": "ENST00000273550.11",
+      "pseudo_tx": "ENST00000466086.2",
+      "parent_name": "FTH1",
+      "pseudo_name": "FTH1P2",
+      "parent_sim_reads": 90091,
+      "pseudo_sim_reads": 4,
+      "parent_tx_resolved": "ENST00000273550.12",
+      "pseudo_tx_resolved": "ENST00000466086.2"
+    },
+    {
+      "parent_tx": "ENST00000370321.8",
+      "pseudo_tx": "ENST00000426545.1",
+      "parent_name": "RPL5",
+      "pseudo_name": "RPL5P34",
+      "parent_sim_reads": 34676,
+      "pseudo_sim_reads": 6,
+      "parent_tx_resolved": "ENST00000370321.8",
+      "pseudo_tx_resolved": "ENST00000426545.1"
+    },
+    {
+      "parent_tx": "ENST00000202773.13",
+      "pseudo_tx": "ENST00000456481.1",
+      "parent_name": "RPL6",
+      "pseudo_name": "RPL6P19",
+      "parent_sim_reads": 26058,
+      "pseudo_sim_reads": 3,
+      "parent_tx_resolved": "ENST00000202773.14",
+      "pseudo_tx_resolved": "ENST00000456481.1"
+    }
+  ]
+}

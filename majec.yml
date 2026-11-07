@@ -10,7 +10,13 @@
 #
 # Then, activate it and install the MAJEC package:
 #   conda activate majec
-#   pip install -e .
+#   pip install -e ".[rust]"     # with the compiled EqC builder (prebuilt wheel)
+#   OR
+#   pip install -e .             # pure-Python builder only (same results, slower)
+#
+# To build the compiled builder from source instead of a wheel, add the Rust
+# toolchain (mamba install -c conda-forge rust maturin) and run:
+#   pip install ./rust/majec-core
 # -----------------------------------------------------------------
 
 name: majec
@@ -21,9 +27,12 @@ channels:
 
 dependencies:
   # --- External Command-Line Tools ---
-  - subread>=2.0
+  # MAJEC itself reads BAMs directly. samtools is used only by the optional
+  # majec_calc_frag_len prepass; subread (featureCounts >=2.0.2, for
+  # --countReadPairs) only by majec_calc_thresholds; sqlite by majec_build_db.
+  # None of them is needed by majec_run_pipeline.
   - samtools=1.22.1
-  - bedtools=2.31.1
+  - subread>=2.0.2
   - sqlite=3.50.4
 
   # --- Python and Core Libraries ---
@@ -32,9 +41,9 @@ dependencies:
   - pandas=2.3.2
   - scipy=1.16.2
   - polars=1.33.1
-  
+  - pysam>=0.22
+
   # --- Python Libraries for Optional Features ---
-  - intervaltree=3.1.0
   - plotly=6.3.0
   - python-kaleido=1.0.0
   - pypdf2=3.0.1
