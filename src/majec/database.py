@@ -813,12 +813,12 @@ def ingest_matrix_data_by_column_batches(
                 )
 
         # Both dataframes now use id_col ('group_id' or 'transcript_id_int')
-        df_counts_long = df_counts_batch.melt(
-            id_vars=[id_col], variable_name="sample_id", value_name="count"
+        df_counts_long = df_counts_batch.unpivot(
+            index=[id_col], variable_name="sample_id", value_name="count"
         )
         if df_tpm_batch is not None:
-            df_tpm_long = df_tpm_batch.melt(
-                id_vars=[id_col], variable_name="sample_id", value_name="tpm"
+            df_tpm_long = df_tpm_batch.unpivot(
+                index=[id_col], variable_name="sample_id", value_name="tpm"
             )
             df_long = df_counts_long.join(df_tpm_long, on=["sample_id", id_col])
         else:

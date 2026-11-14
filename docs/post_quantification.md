@@ -280,12 +280,14 @@ majec_visualize \
 | `--group_A_str` / `--group_A_file` | Group A, as a criteria string or a file. One of the two is required. |
 | `--group_B_str` / `--group_B_file` | Group B, as above. |
 | `--delta_psi_bootstrap` | Bootstrap iterations for ΔPSI confidence intervals (default 1000). |
-| `--save_svg` | Also save SVG files. Needs kaleido. |
-| `--save_pdf` | Also save PDF files. Needs kaleido, plus PyPDF2 for the combined multi-page PDFs. |
+| `--save_svg` | Also save SVG files. Needs kaleido and Chrome (see below). |
+| `--save_pdf` | Also save PDF files. Needs kaleido and Chrome (see below), plus PyPDF2 for the combined multi-page PDFs. |
 | `--export_excel` | Write a companion spreadsheet with the raw and aggregated data. Needs xlsxwriter. |
 | `--include_related_genes` | Also run the report for every gene that shares a junction with the query gene. |
 
 Criteria use the same `key=value` syntax as the comparisons file. A group file should hold the criteria on one line, separated by semicolons.
+
+**SVG and PDF export need Chrome.** kaleido 1.0 and later renders images through a Chrome browser. If Chrome is not installed, run `plotly_get_chrome` once (or `kaleido_get_chrome`); it downloads a copy for kaleido to use. Without Chrome, `--save_svg` and `--save_pdf` stop with a `ChromeNotFoundError`. The interactive HTML reports do not need it.
 
 ### Report Contents
 
