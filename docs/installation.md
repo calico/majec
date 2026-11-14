@@ -62,7 +62,7 @@ Extras can be combined, for example `pip install "majec[rust,full_analysis]"`.
 |---|---|---|
 | `rust` | majec-core | the compiled builder |
 | `database` | polars | `majec_build_db` |
-| `viz` | plotly, python-kaleido, pypdf2, xlsxwriter | `majec_visualize` (kaleido for SVG/PDF export, pypdf2 for merged PDFs, xlsxwriter for `--export_excel`) |
+| `viz` | plotly, kaleido, pypdf2, xlsxwriter | `majec_visualize` (kaleido for SVG/PDF export, pypdf2 for merged PDFs, xlsxwriter for `--export_excel`) |
 | `full_analysis` | everything in `database` and `viz` | all downstream tools |
 
 `majec_run_pipeline`, `majec_precompute_annotations`, `majec_add_norm_factors` and `majec_prepare_deseq2` need only the core dependencies. Running the R scripts that `majec_prepare_deseq2` generates needs R with the Bioconductor packages DESeq2 and genefilter.

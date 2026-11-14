@@ -24,7 +24,7 @@ About 45% of the human genome consists of TEs, and many of them sit inside gene 
 
 ## What's new in 0.2.0
 
-0.2.0 builds on 0.1.5. See [CHANGELOG.md](CHANGELOG.md) for the full list and migration notes, and the [0.2.0 white paper](docs/whitepaper.md) for a benchmark comparison of the two versions.
+0.2.0 builds on 0.1.5. See [CHANGELOG.md](https://github.com/calico/majec/blob/master/CHANGELOG.md) for the full list and migration notes, and the [0.2.0 white paper](https://github.com/calico/majec/blob/master/docs/whitepaper.md) for a benchmark comparison of the two versions.
 
 - **Single-pass, junction-aware equivalence classes (EqCs).** MAJEC reads the BAM directly. Each fragment's candidate transcripts come from exon overlap, annotated-junction compatibility, and exon containment, and the two mates' candidates are intersected. This replaces the featureCounts-based read assignment.
 - **Two interchangeable builders.** The compiled builder (majec-core, `pip install "majec[rust]"`) and the pure-Python builder (pysam, always installed) give the same results; the pure-Python one is roughly 6× slower on the BAM scan. The log and the run manifest record which one ran.
@@ -37,7 +37,7 @@ About 45% of the human genome consists of TEs, and many of them sit inside gene 
 ## Installation
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/majec/README.html)
 
-MAJEC needs Python 3.11 or newer. See [docs/installation.md](docs/installation.md) for details, extras, and building majec-core from source.
+MAJEC needs Python 3.11 or newer. See [docs/installation.md](https://github.com/calico/majec/blob/master/docs/installation.md) for details, extras, and building majec-core from source.
 
 ### pip
 
@@ -102,7 +102,7 @@ majec_run_pipeline \
     --use_cache
 ```
 
-Input BAMs should be coordinate-sorted and produced by a splice-aware aligner such as STAR. For TE quantification, use `--outFilterMultimapNmax 100` (or similar) during alignment to retain multimapping reads. See [docs/bam_preparation.md](docs/bam_preparation.md). For single-end data, omit `--paired_end`.
+Input BAMs should be coordinate-sorted and produced by a splice-aware aligner such as STAR. For TE quantification, use `--outFilterMultimapNmax 100` (or similar) during alignment to retain multimapping reads. See [docs/bam_preparation.md](https://github.com/calico/majec/blob/master/docs/bam_preparation.md). For single-end data, omit `--paired_end`.
 
 ## Outputs
 
@@ -116,7 +116,7 @@ MAJEC aggregates locus-level estimates and writes DESeq2-ready matrices at sever
 - `{prefix}_run_manifest.json`: input for `majec_build_db`; records the MAJEC version and which EqC builder ran.
 - `{prefix}_pipeline.log`: run log.
 
-See [docs/output_files.md](docs/output_files.md) for column descriptions.
+See [docs/output_files.md](https://github.com/calico/majec/blob/master/docs/output_files.md) for column descriptions.
 
 ## How It Works
 
@@ -130,18 +130,18 @@ See [docs/output_files.md](docs/output_files.md) for column descriptions.
 
 5. **Output**: final gene-level, transcript-level, and (if applicable) TE locus-level count matrices, plus optional TPM and confidence metrics.
 
-See [docs/algorithm_details.md](docs/algorithm_details.md) for details.
+See [docs/algorithm_details.md](https://github.com/calico/majec/blob/master/docs/algorithm_details.md) for details.
 
 ## Optional Workflow Tools
 
-MAJEC includes additional tools for downstream analysis. See [docs/post_quantification.md](docs/post_quantification.md) for details.
+MAJEC includes additional tools for downstream analysis. See [docs/post_quantification.md](https://github.com/calico/majec/blob/master/docs/post_quantification.md) for details.
 
 - **`majec_build_db`**: consolidates results from one or more pipeline runs (via their `_run_manifest.json` files) into a single, queryable SQLite database. Supports merging chunked runs and attaching sample metadata, and serves as the input for the downstream tools.
 - **`majec_add_norm_factors`**: calculates normalization size factors and adds them to the database.
 - **`majec_prepare_deseq2`**: generates ready-to-run DESeq2 analysis packages from the database. Supports flexible sample group definitions, confidence-weighted variance modeling, gene/transcript/junction/delta-PSI analysis levels, and batch correction.
 - **`majec_visualize`**: generates interactive, multi-panel HTML reports for individual genes, including junction arc plots, differential splicing heatmaps, per-sample penalty diagnostics, and optional Excel export.
 
-Two helper tools are also installed: `majec_calc_thresholds` (cohort-wide expression thresholds for `--use_bins`) and `majec_calc_frag_len` (fragment-length statistics for the optional `--frag_stats_dir` override). See [docs/usage_guide.md](docs/usage_guide.md).
+Two helper tools are also installed: `majec_calc_thresholds` (cohort-wide expression thresholds for `--use_bins`) and `majec_calc_frag_len` (fragment-length statistics for the optional `--frag_stats_dir` override). See [docs/usage_guide.md](https://github.com/calico/majec/blob/master/docs/usage_guide.md).
 
 ## Key Parameters
 
@@ -159,14 +159,14 @@ Run `majec_run_pipeline --help` or `majec_precompute_annotations --help` for the
 
 ## Documentation
 
-- [Installation](docs/installation.md): pip, conda, and bioconda installs; the compiled and pure-Python builders; optional external tools
-- [BAM Preparation](docs/bam_preparation.md): STAR alignment parameters for TE-aware quantification
-- [Algorithm Details](docs/algorithm_details.md): EqC construction, two-phase EM, prior adjustment models, momentum acceleration, confidence metrics
-- [Output Files](docs/output_files.md): column descriptions for all output tables and confidence reports
-- [Post-Quantification Workflows](docs/post_quantification.md): database building, DESeq2 integration, and visualization
-- [Usage Guide](docs/usage_guide.md): configuration templates, utility tools, resource requirements, and HPC deployment
-- [0.2.0 White Paper](docs/whitepaper.md): what changed from 0.1.5, and how the two versions compare on spike-in, long-read and TE benchmarks
-- [Changelog](CHANGELOG.md): changes in each release and notes on migrating from 0.1.5
+- [Installation](https://github.com/calico/majec/blob/master/docs/installation.md): pip, conda, and bioconda installs; the compiled and pure-Python builders; optional external tools
+- [BAM Preparation](https://github.com/calico/majec/blob/master/docs/bam_preparation.md): STAR alignment parameters for TE-aware quantification
+- [Algorithm Details](https://github.com/calico/majec/blob/master/docs/algorithm_details.md): EqC construction, two-phase EM, prior adjustment models, momentum acceleration, confidence metrics
+- [Output Files](https://github.com/calico/majec/blob/master/docs/output_files.md): column descriptions for all output tables and confidence reports
+- [Post-Quantification Workflows](https://github.com/calico/majec/blob/master/docs/post_quantification.md): database building, DESeq2 integration, and visualization
+- [Usage Guide](https://github.com/calico/majec/blob/master/docs/usage_guide.md): configuration templates, utility tools, resource requirements, and HPC deployment
+- [0.2.0 White Paper](https://github.com/calico/majec/blob/master/docs/whitepaper.md): what changed from 0.1.5, and how the two versions compare on spike-in, long-read and TE benchmarks
+- [Changelog](https://github.com/calico/majec/blob/master/CHANGELOG.md): changes in each release and notes on migrating from 0.1.5
 
 ## Citation
 
@@ -176,4 +176,4 @@ If you use MAJEC in your research, please cite:
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](https://github.com/calico/majec/blob/master/LICENSE) for details.

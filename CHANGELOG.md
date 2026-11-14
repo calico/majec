@@ -71,6 +71,7 @@ These changes apply without any change to your command line.
 - `majec_build_db` skipped the count tables for runs without `--output_tpm`. It now loads the counts and leaves `tpm` empty.
 - `--analyze_competition` without `--output_confidence` stopped the run after the counts were written. It is now switched off with a warning.
 - `{prefix}_prior_adjustment_summary.tsv` gained rows on every rerun with the same prefix. It is now rewritten each run.
+- `pip install "majec[viz]"` and `pip install "majec[full_analysis]"` failed to resolve: the extras required `python-kaleido`, the conda-forge name. They now require `kaleido`, its name on PyPI.
 
 ### Compatibility and migration
 
