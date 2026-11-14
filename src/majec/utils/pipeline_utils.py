@@ -3,30 +3,12 @@
 import logging
 import sys
 import os
-import subprocess
 import re
-import pickle
 from collections import defaultdict
 
 # Third-party imports
 import numpy as np
 import pandas as pd
-
-
-def load_precomputed_junction_map(pickle_file):
-    """Load pre-computed junction uniqueness map."""
-    with open(pickle_file, "rb") as f:
-        data = pickle.load(f)
-
-    logging.info(
-        f"Loaded junction map with {data['metadata']['total_junctions']:,} junctions"
-    )
-    logging.info(
-        f"  ({data['metadata']['unique_junctions']:,} unique, "
-        f"{data['metadata']['shared_junctions']:,} shared)"
-    )
-
-    return data
 
 
 def setup_logging(prefix):
@@ -41,27 +23,6 @@ def setup_logging(prefix):
         ],
     )
     logging.info(f"Logging initialized. Log file at: {log_file}")
-
-
-def safe_subprocess_run(command, description="", **kwargs):
-    """Run subprocess with proper error handling."""
-    try:
-        # Add executable='/bin/bash' to ensure a compatible shell is used
-        result = subprocess.run(
-            command,
-            shell=True,
-            check=True,
-            capture_output=True,
-            text=True,
-            executable="/bin/bash",
-            **kwargs,
-        )
-        return result
-    except subprocess.CalledProcessError as e:
-        logging.error(
-            f"Error {description}: {e}\nSTDERR: {e.stderr}\nSTDOUT: {e.stdout}"
-        )
-        raise
 
 
 def get_sample_name_from_bam(bam_path):
@@ -136,15 +97,33 @@ def get_sample_name_from_bam(bam_path):
             sample_name = sample_name[len(prefix) :]
             break  # Only strip one prefix
 
+    non_informative = {"", "aligned", "output", "results"}
+    if sample_name.lower() in non_informative:
+        sample_name = os.path.basename(os.path.dirname(bam_path))
+
     return sample_name
 
 
 def calculate_effective_length_distributional(transcript_lengths, frag_mean, frag_sd):
     """
     Calculates effective lengths with scipy truncnorm or numpy fallback.
+
+    Returns the conditional effective length, L - E[d | d <= L] + 1, i.e. the
+    fragment length distribution is renormalized over the fragments the
+    transcript is actually long enough to produce, matching Salmon and RSEM.
+    Without that renormalization the estimate collapses towards zero for
+    transcripts shorter than the fragment mean (a 150 bp transcript at mean 205
+    / sd 85 gets 12.2 instead of 47.9) and their TPM is inflated by the same
+    factor.  Transcripts shorter than the shortest modelled fragment get 1,
+    which is the limit of the conditional length as L approaches that bound, so
+    the result stays continuous and non-decreasing in L.
     """
+    lengths = transcript_lengths.astype(float)
+
     if frag_sd is None or frag_sd <= 0:
-        return (transcript_lengths - frag_mean + 1).clip(lower=1)
+        # Point mass at frag_mean: the conditional length is L - frag_mean + 1,
+        # already floored at 1 below the fragment length.
+        return (lengths - frag_mean + 1).clip(lower=1)
 
     min_len = int(max(1, frag_mean - 4 * frag_sd))
     max_len = int(frag_mean + 4 * frag_sd)
@@ -165,9 +144,7 @@ def calculate_effective_length_distributional(transcript_lengths, frag_mean, fra
 
         # For truncated normal, we need to account for the truncation
         # This is approximate but pretty close for ±4 SD range
-        logging.warning(
-            "scipy not available - using approximate truncated normal", RuntimeWarning
-        )
+        logging.warning("scipy not available - using approximate truncated normal")
 
     # Normalize probabilities
     probs /= probs.sum()
@@ -176,7 +153,83 @@ def calculate_effective_length_distributional(transcript_lengths, frag_mean, fra
     possible_starts = np.maximum(T - frag_lengths[np.newaxis, :] + 1, 0)
     eff_lengths = possible_starts @ probs
 
-    return pd.Series(eff_lengths, index=transcript_lengths.index)
+    # sum_d P(d) * max(L - d + 1, 0) is only the numerator; dividing by
+    # P(d <= L) renormalizes the distribution over producible fragments.
+    cdf = np.cumsum(probs)
+    idx = np.searchsorted(frag_lengths, lengths.values, side="right") - 1
+    producible = np.where(idx >= 0, cdf[np.clip(idx, 0, None)], 0.0)
+    eff_lengths = np.divide(
+        eff_lengths, producible, out=np.zeros_like(eff_lengths), where=producible > 0
+    )
+
+    return pd.Series(eff_lengths, index=transcript_lengths.index).clip(lower=1)
+
+
+def fragment_hist_moments(frag_hist):
+    """(n, mean, sd) of a {fragment length: weight} histogram, for logging."""
+    lengths = np.fromiter(frag_hist.keys(), dtype=np.float64, count=len(frag_hist))
+    weights = np.fromiter(frag_hist.values(), dtype=np.float64, count=len(frag_hist))
+    n = weights.sum()
+    if n <= 0:
+        return 0.0, 0.0, 0.0
+    mean = (lengths * weights).sum() / n
+    sd = np.sqrt((weights * (lengths - mean) ** 2).sum() / n)
+    return n, mean, sd
+
+
+def calculate_effective_length_empirical(transcript_lengths, frag_hist):
+    """
+    Effective lengths from the empirical fragment-length histogram the EqC
+    builder measures during its BAM scan, rather than from a truncated normal
+    fitted to (mean, sd).
+
+    Same quantity as calculate_effective_length_distributional, the conditional
+    length L - E[d | d <= L] + 1, but computed against the observed pmf.  Two
+    reasons to prefer it: the measured distribution is right-skewed (mean 303,
+    median 261 on SRR24204276), so a normal is the wrong family; and since
+
+        E[d | d <= L] = S(L) / C(L),
+        C(L) = sum_{d <= L} p_d,   S(L) = sum_{d <= L} d * p_d
+
+    the whole vector follows from two cumulative sums and one searchsorted,
+    instead of the (n_transcripts x n_fragment_lengths) matrix the truncnorm
+    path materializes.
+
+    frag_hist maps cDNA fragment length to weight, as emitted in the EqC
+    builder's stats under 'fragment_length_hist'.  Weights are fractional (a
+    pair is spread 1/k over its k compatible transcripts) and need not be
+    normalized.  Transcripts shorter than the shortest observed fragment get 1,
+    matching the truncnorm path's behaviour below its own lower bound.
+    """
+    lengths = transcript_lengths.astype(float)
+
+    keys = sorted(frag_hist)
+    d = np.asarray(keys, dtype=np.float64)
+    w = np.asarray([frag_hist[k] for k in keys], dtype=np.float64)
+    total = w.sum()
+    if d.size == 0 or total <= 0:
+        logging.warning("Empty fragment length histogram - using annotated lengths.")
+        return lengths.clip(lower=1)
+
+    p = w / total
+    cum_p = np.cumsum(p)
+    cum_dp = np.cumsum(d * p)
+
+    L = lengths.values
+    # idx = index of the largest observed fragment length <= L; -1 if the
+    # transcript is shorter than every fragment we saw.
+    idx = np.searchsorted(d, L, side="right") - 1
+    producible = idx >= 0
+    safe = np.clip(idx, 0, None)
+    C = cum_p[safe]
+    S = cum_dp[safe]
+
+    eff = np.where(
+        producible & (C > 0),
+        (L + 1.0) - S / np.where(C > 0, C, 1.0),
+        1.0,
+    )
+    return pd.Series(eff, index=transcript_lengths.index).clip(lower=1)
 
 
 def create_convergence_groups(pipeline_context, theta, percentile_thresholds=[25, 75]):
@@ -277,6 +330,31 @@ def standard_em_step(theta, unique_groups, multi_groups, previous_multi_counts):
 
     # Return new total counts (same as original)
     return unique_counts.add(multi_counts, fill_value=0), unique_counts, multi_counts
+
+
+# def standard_em_step(theta, unique_groups, multi_groups, previous_multi_counts):
+#     logging.info("Performing standard EM step with unified prior...")
+#     # Combine with normalized keys (convert everything to frozenset)
+#     all_groups = {}
+
+#     # Add unique groups (convert tuple keys to frozenset)
+#     for key, count in unique_groups.items():
+#         normalized_key = frozenset(key) if not isinstance(key, frozenset) else key
+#         all_groups[normalized_key] = all_groups.get(normalized_key, 0) + count
+
+#     # Add multi groups
+#     for key, count in multi_groups.items():
+#         normalized_key = frozenset(key) if not isinstance(key, frozenset) else key
+#         all_groups[normalized_key] = all_groups.get(normalized_key, 0) + count
+
+#     # Single E-step with unified prior
+#     new_counts = expectation_step_grouped(all_groups, theta)
+
+#     # For decomposition (if needed for logging)
+#     unique_counts = expectation_step_grouped(unique_groups, theta)
+#     multi_counts = new_counts - unique_counts
+
+#     return new_counts, unique_counts, multi_counts
 
 
 def grouped_momentum_acceleration(

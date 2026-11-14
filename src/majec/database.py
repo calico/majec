@@ -14,22 +14,23 @@ import json
 from textwrap import dedent
 
 # --- SCHEMA DEFINITIONS (Constants) ---
-# Schemas are defined centrally for clarity and easy modification.
+# Type overrides for columns that need explicit typing. Columns not listed
+# here will be inferred by Polars from the file data. The first (unnamed index)
+# column is read as the header and renamed to 'transcript_id_str' after loading.
 
-PRIORS_SCHEMA = {
-    "transcript_id_str": pl.Utf8,  # The first column from the file, which has no header
+PRIORS_TYPE_OVERRIDES = {
     "initial_count": pl.Float64,
     "junction_boost": pl.Float64,
     "raw_junction_evidence": pl.Float64,
     "junction_weight": pl.Float64,
     "post_junction_count": pl.Float64,
+    "tsl": pl.Utf8,
+    "tsl_penalty": pl.Float64,
     "n_expected_junctions": pl.Int64,
     "n_observed_junctions": pl.Int64,
     "junction_observation_rate": pl.Float64,
     "completeness_penalty": pl.Float64,
     "completeness_model": pl.Utf8,
-    "terminal_recovery_used": pl.Boolean,
-    "RMS_used": pl.Boolean,
     "worst_junction_position": pl.Int64,
     "z_score": pl.Float64,
     "n_worst_junctions": pl.Int64,
@@ -39,28 +40,20 @@ PRIORS_SCHEMA = {
     "recovery_point": pl.Float64,
     "worst_expected_vs_actual": pl.Utf8,
     "median_coverage": pl.Float64,
-    "pure_median_1pct": pl.Boolean,
-    "used_splice_competition": pl.Boolean,
     "n_competing_junctions": pl.Int64,
     "post_completeness_count": pl.Float64,
-    "is_subset": pl.Boolean,
     "original_subset_penalty": pl.Float64,
     "subset_z_score": pl.Float64,
     "adjusted_subset_penalty": pl.Float64,
-    "territory_confidence": pl.Float64,
-    "territory_evidence_ratio": pl.Float64,
     "penalty_combination_strategy": pl.Utf8,
     "final_count": pl.Float64,
     "total_penalty": pl.Float64,
-    "tsl_penalty": pl.Float64,
     "subset_penalty": pl.Float64,
     "total_prior_adjustment": pl.Float64,
-    "had_junction_boost": pl.Boolean,
-    "had_penalty": pl.Boolean,
     "penalty_types": pl.Utf8,
 }
-COUNTS_WITH_CONFIDENCE_SCHEMA = {
-    "transcript_id_str": pl.Utf8,
+
+COUNTS_WITH_CONFIDENCE_TYPE_OVERRIDES = {
     "count": pl.Float64,
     "entropy": pl.Float64,
     "confidence_score": pl.Float64,
@@ -83,7 +76,6 @@ COUNTS_WITH_CONFIDENCE_SCHEMA = {
     "intra_gene_competition_frac": pl.Float64,
     "inter_gene_competition_frac": pl.Float64,
     "junction_evidence_fraction": pl.Float64,
-    "has_unique_junction_support": pl.Boolean,
     "junction_confidence_category": pl.Utf8,
     "discord_score": pl.Float64,
     "overall_confidence": pl.Utf8,
@@ -264,37 +256,6 @@ def create_schema(cur):
             junction_id_str TEXT UNIQUE,
             n_transcripts_sharing INTEGER,
             is_unique INTEGER
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS territory_regions (
-            region_id INTEGER PRIMARY KEY,
-            chr TEXT,
-            start INTEGER,
-            end INTEGER,
-            strand TEXT,
-            length INTEGER,
-            region_type TEXT  -- e.g., 'unique' or 'comparator'
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS transcript_territories (
-            transcript_id_int INTEGER,
-            region_id INTEGER,
-            territory_role TEXT, -- 'unique' or 'comparator' for this transcript
-            PRIMARY KEY (transcript_id_int, region_id),
-            FOREIGN KEY(transcript_id_int) REFERENCES transcript_annotations(transcript_id_int),
-            FOREIGN KEY(region_id) REFERENCES territory_regions(region_id)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS territory_coverage (
-            sample_id_int INTEGER,
-            region_id INTEGER,
-            mean_coverage REAL,
-            PRIMARY KEY (sample_id_int, region_id),
-            FOREIGN KEY(sample_id_int) REFERENCES sample_metadata(sample_id_int),
-            FOREIGN KEY(region_id) REFERENCES territory_regions(region_id)
         )
     """)
 
@@ -530,8 +491,8 @@ def parse_and_ingest_metadata(db_path, metadata_file, sample_names_from_manifest
     # Check that all declared variables actually exist as columns
     all_declared_vars = set(experimental_vars + id_vars)
     all_data_columns = set(
-        df_meta.columns[1:]
-    )  # All columns except the first ID column
+        df_meta.columns
+    )  # sample_id may itself be declared as an id variable
     if not all_declared_vars.issubset(all_data_columns):
         missing_cols = all_declared_vars - all_data_columns
         print(
@@ -669,64 +630,6 @@ def ingest_annotation_data(con, cur, anno_data):
     print("Annotation context ingestion complete.")
 
 
-def ingest_territory_data(con, cur, anno_data):
-    """Ingests subset rescue territory data into dedicated tables."""
-    print("--- Ingesting subset territory data ---")
-
-    # Check if annotation data already loaded
-    cur.execute("SELECT COUNT(*) FROM transcript_territories")
-    if cur.fetchone()[0] > 0:
-        print("  territories data already exists. Skipping.")
-        return
-
-    territory_mapping = anno_data.get("subset_coverage_territory_mapping")
-    if not territory_mapping or "regions" not in territory_mapping:
-        print("  INFO: No subset territory data found in annotation file. Skipping.")
-        return
-
-    # 1. Ingest the master list of regions
-    print(f"  Processing {len(territory_mapping['regions'])} territory regions...")
-    region_records = []
-    for region_id, info in territory_mapping["regions"].items():
-        region_records.append(
-            {
-                "region_id": region_id,
-                "chr": info["chr"],
-                "start": info["start"],
-                "end": info["end"],
-                "strand": info["strand"],
-                "length": info["length"],
-                "region_type": info["type"],
-            }
-        )
-
-    if region_records:
-        df_regions = pd.DataFrame(region_records)
-        df_regions.to_sql("territory_regions", con, if_exists="replace", index=False)
-
-    # 2. Ingest the links between transcripts and regions
-    print(
-        f"  Processing links for {len(territory_mapping['subset_territories'])} transcripts..."
-    )
-    link_records = []
-    for transcript_id, territories in territory_mapping["subset_territories"].items():
-        tid_int = int(transcript_id)
-
-        for region_id in territories.get("unique", []):
-            link_records.append((tid_int, int(region_id), "unique"))
-
-        for region_id in territories.get("comparator", []):
-            link_records.append((tid_int, int(region_id), "comparator"))
-
-    if link_records:
-        cur.executemany(
-            "INSERT INTO transcript_territories VALUES (?, ?, ?)", link_records
-        )
-
-    con.commit()
-    print("Subset territory data ingestion complete.")
-
-
 def ingest_matrix_data_from_multiple_files(
     con,
     cur,
@@ -742,9 +645,16 @@ def ingest_matrix_data_from_multiple_files(
     Process multiple matrix file pairs sequentially.
     Each file pair adds additional columns (samples) to the database.
     """
-    if not counts_files or not tpm_files:
+    if not counts_files:
         print(f"  INFO: No matrix files for '{table_name}'. Skipping.")
         return
+    counts_only = not tpm_files
+    if counts_only:
+        print(
+            f"  INFO: No TPM files for '{table_name}'; loading counts only (tpm left NULL). "
+            "Run majec_run_pipeline with --output_tpm to include TPM."
+        )
+        tpm_files = [None] * len(counts_files)
 
     # Check for exisiting data
     cur.execute(f"SELECT COUNT(*) FROM {table_name}")
@@ -775,7 +685,7 @@ def ingest_matrix_data_from_multiple_files(
     for idx, (counts_file, tpm_file) in enumerate(zip(counts_files, tpm_files)):
         print(f"  Processing matrix pair {idx+1}/{len(counts_files)}:")
         print(f"    Counts: {os.path.basename(counts_file)}")
-        print(f"    TPM:    {os.path.basename(tpm_file)}")
+        print(f"    TPM:    {os.path.basename(tpm_file) if tpm_file else '(none)'}")
 
         ingest_matrix_data_by_column_batches(
             cur,
@@ -788,6 +698,10 @@ def ingest_matrix_data_from_multiple_files(
             skip_if_exists=False,
             transcript_lookup=transcript_lookup,
         )
+    if counts_only:
+        # sqlite3's CSV import stores an empty field as '' rather than NULL
+        cur.execute(f"UPDATE {table_name} SET tpm = NULL WHERE tpm = ''")
+        con.commit()
 
 
 def ingest_matrix_data_by_column_batches(
@@ -815,22 +729,21 @@ def ingest_matrix_data_by_column_batches(
 
     # Get headers from both files
     counts_header = pl.read_csv(counts_file, separator="\t", n_rows=0).columns
-    tpm_header = pl.read_csv(tpm_file, separator="\t", n_rows=0).columns
-
     counts_id_col = counts_header[0]
-    tpm_id_col = tpm_header[0]
-
-    # Get the sample columns from each file
     sample_columns_counts = counts_header[1:]
-    sample_columns_tpm = tpm_header[1:]
 
-    # CRITICAL VALIDATION: Ensure the sample columns are identical.
-    if set(sample_columns_counts) != set(sample_columns_tpm):
-        print(
-            "FATAL ERROR: Sample columns in counts and TPM files do not match.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    # tpm_file is None for a counts-only run (no --output_tpm)
+    if tpm_file is not None:
+        tpm_header = pl.read_csv(tpm_file, separator="\t", n_rows=0).columns
+        tpm_id_col = tpm_header[0]
+        sample_columns_tpm = tpm_header[1:]
+        # CRITICAL VALIDATION: Ensure the sample columns are identical.
+        if set(sample_columns_counts) != set(sample_columns_tpm):
+            print(
+                "FATAL ERROR: Sample columns in counts and TPM files do not match.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Use the counts samples as the authority for order
     sample_columns = sample_columns_counts
@@ -845,12 +758,14 @@ def ingest_matrix_data_by_column_batches(
 
         # Read with correct column names for each file
         counts_cols_to_read = [counts_id_col] + batch_samples
-        tpm_cols_to_read = [tpm_id_col] + batch_samples
-
         df_counts_batch = pl.read_csv(
             counts_file, separator="\t", columns=counts_cols_to_read
         )
-        df_tpm_batch = pl.read_csv(tpm_file, separator="\t", columns=tpm_cols_to_read)
+        df_tpm_batch = (
+            pl.read_csv(tpm_file, separator="\t", columns=[tpm_id_col] + batch_samples)
+            if tpm_file is not None
+            else None
+        )
 
         if is_aggregated:
             df_counts_batch = df_counts_batch.select(
@@ -859,12 +774,13 @@ def ingest_matrix_data_by_column_batches(
                     *[pl.col(c) for c in df_counts_batch.columns[1:]],
                 ]
             )
-            df_tpm_batch = df_tpm_batch.select(
-                [
-                    pl.col(df_tpm_batch.columns[0]).alias("group_id"),
-                    *[pl.col(c) for c in df_tpm_batch.columns[1:]],
-                ]
-            )
+            if df_tpm_batch is not None:
+                df_tpm_batch = df_tpm_batch.select(
+                    [
+                        pl.col(df_tpm_batch.columns[0]).alias("group_id"),
+                        *[pl.col(c) for c in df_tpm_batch.columns[1:]],
+                    ]
+                )
             id_col = "group_id"
             columns_to_write = ["sample_id_int", "group_id", "count", "tpm"]
         else:
@@ -875,12 +791,13 @@ def ingest_matrix_data_by_column_batches(
                 transcript_lookup, on="transcript_id_str", how="left"
             ).drop("transcript_id_str")
 
-            df_tpm_batch = df_tpm_batch.rename(
-                {df_tpm_batch.columns[0]: "transcript_id_str"}
-            )
-            df_tpm_batch = df_tpm_batch.join(
-                transcript_lookup, on="transcript_id_str", how="left"
-            ).drop("transcript_id_str")
+            if df_tpm_batch is not None:
+                df_tpm_batch = df_tpm_batch.rename(
+                    {df_tpm_batch.columns[0]: "transcript_id_str"}
+                )
+                df_tpm_batch = df_tpm_batch.join(
+                    transcript_lookup, on="transcript_id_str", how="left"
+                ).drop("transcript_id_str")
 
             id_col = "transcript_id_int"
             columns_to_write = ["sample_id_int", "transcript_id_int", "count", "tpm"]
@@ -890,19 +807,25 @@ def ingest_matrix_data_by_column_batches(
             df_counts_batch = df_counts_batch.with_columns(
                 pl.col(col).cast(pl.Float64, strict=False)
             )
-            df_tpm_batch = df_tpm_batch.with_columns(
-                pl.col(col).cast(pl.Float64, strict=False)
-            )
+            if df_tpm_batch is not None:
+                df_tpm_batch = df_tpm_batch.with_columns(
+                    pl.col(col).cast(pl.Float64, strict=False)
+                )
 
         # Both dataframes now use id_col ('group_id' or 'transcript_id_int')
         df_counts_long = df_counts_batch.melt(
             id_vars=[id_col], variable_name="sample_id", value_name="count"
         )
-        df_tpm_long = df_tpm_batch.melt(
-            id_vars=[id_col], variable_name="sample_id", value_name="tpm"
-        )
-
-        df_long = df_counts_long.join(df_tpm_long, on=["sample_id", id_col])
+        if df_tpm_batch is not None:
+            df_tpm_long = df_tpm_batch.melt(
+                id_vars=[id_col], variable_name="sample_id", value_name="tpm"
+            )
+            df_long = df_counts_long.join(df_tpm_long, on=["sample_id", id_col])
+        else:
+            df_tpm_long = None
+            df_long = df_counts_long.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("tpm")
+            )
         df_long = df_long.with_columns(
             [
                 pl.col("count").cast(pl.Float64, strict=False),
@@ -943,61 +866,28 @@ def ingest_per_sample_data(
     table_name,
     per_sample_map,
     file_key,
-    schema_dict,
+    type_overrides,
     sample_map,
     transcript_map,
 ):
     """
-    The definitive, high-performance ingestion function. It uses a static,
-    hardcoded Polars schema to robustly read files and create the database table.
+    High-performance ingestion function. Reads files using their headers and
+    applies type overrides for columns that need explicit typing. Extra or
+    missing columns are handled gracefully.
     """
-    print(f"--- Ingesting data for table: {table_name} (Static Schema) ---")
+    print(f"--- Ingesting data for table: {table_name} ---")
 
-    # --- Step 1: Create the table with the correct schema, IF it doesn't exist ---
+    # --- Step 1: Check if table already has data ---
+    table_created = False
     try:
-        # Check if table already has data.
         cur.execute(f"SELECT COUNT(*) FROM {table_name}")
         if cur.fetchone()[0] > 0:
             print(f"  Table '{table_name}' already contains data. Skipping ingestion.")
             return
     except sqlite3.OperationalError:
-        # Table doesn't exist, so we create it.
-        print(f"  -> Table '{table_name}' not found. Creating it now...")
-
-        # Map Polars dtypes to SQLite dtypes for the CREATE TABLE statement
-        sql_dtype_map = {
-            pl.Int64: "INTEGER",
-            pl.Int32: "INTEGER",
-            pl.Int16: "INTEGER",
-            pl.Int8: "INTEGER",
-            pl.UInt64: "INTEGER",
-            pl.UInt32: "INTEGER",
-            pl.UInt16: "INTEGER",
-            pl.UInt8: "INTEGER",
-            pl.Float64: "REAL",
-            pl.Float32: "REAL",
-            pl.Boolean: "INTEGER",  # Booleans are stored as 0 or 1 in SQLite
-            pl.Utf8: "TEXT",
-        }
-
-        final_table_columns = ["sample_id_int INTEGER", "transcript_id_int INTEGER"]
-
-        # Iterate through the static schema, skipping the first key ('transcript_id_str')
-        for col_name, dtype in list(schema_dict.items())[1:]:
-            sql_type = sql_dtype_map.get(dtype, "TEXT")
-            final_table_columns.append(f'"{col_name}" {sql_type}')
-
-        # Join them all into the final CREATE TABLE statement
-        create_table_sql = (
-            f"CREATE TABLE {table_name} ({', '.join(final_table_columns)})"
-        )
-        cur.execute(create_table_sql)
-        con.commit()
+        table_created = False
 
     # --- Step 2: Loop through all files and ingest them ---
-    column_names_from_schema = list(schema_dict.keys())
-
-    # make_lookup df
     transcript_lookup = pl.DataFrame(
         {
             "transcript_id_str": list(transcript_map.keys()),
@@ -1005,7 +895,21 @@ def ingest_per_sample_data(
         }
     )
 
-    # Use a single transaction for the entire table for maximum speed
+    sql_dtype_map = {
+        pl.Int64: "INTEGER",
+        pl.Int32: "INTEGER",
+        pl.Int16: "INTEGER",
+        pl.Int8: "INTEGER",
+        pl.UInt64: "INTEGER",
+        pl.UInt32: "INTEGER",
+        pl.UInt16: "INTEGER",
+        pl.UInt8: "INTEGER",
+        pl.Float64: "REAL",
+        pl.Float32: "REAL",
+        pl.Boolean: "INTEGER",
+        pl.Utf8: "TEXT",
+    }
+
     with con:
         for file_idx, (sample_name, paths_dict) in enumerate(per_sample_map.items()):
             file_path = paths_dict.get(file_key)
@@ -1015,19 +919,27 @@ def ingest_per_sample_data(
                 f"  Processing file {file_idx + 1}/{len(per_sample_map)}: {os.path.basename(file_path)}..."
             )
 
-            # Read the file using our robust, static schema. This is the key.
+            # Build schema overrides for columns present in this file
+            file_overrides = {}
+            for col_name, dtype in type_overrides.items():
+                file_overrides[col_name] = dtype
+
             df_sample = pl.read_csv(
                 file_path,
                 separator="\t",
-                has_header=False,
-                skip_rows=1,
-                new_columns=column_names_from_schema,  # Assign the correct names
-                dtypes=schema_dict,  # Enforce the correct data types
-                null_values=["", "NA", "None", "nan", "inf", "true", "false"],
+                has_header=True,
+                infer_schema_length=1000,
+                schema_overrides=file_overrides,
+                null_values=["", "NA", "None", "nan", "inf"],
             )
 
             if df_sample.is_empty():
                 continue
+
+            # Rename the index column (first column, typically unnamed or empty string)
+            first_col = df_sample.columns[0]
+            if first_col != "transcript_id_str":
+                df_sample = df_sample.rename({first_col: "transcript_id_str"})
 
             df_sample = df_sample.with_columns(
                 [pl.lit(sample_map.get(sample_name)).alias("sample_id_int")]
@@ -1037,16 +949,45 @@ def ingest_per_sample_data(
                 transcript_lookup, on="transcript_id_str", how="left"
             )
 
+            # Create table from first file's schema if it doesn't exist yet
+            if not table_created:
+                print(f"  -> Creating table '{table_name}' from file schema...")
+                final_table_columns = [
+                    "sample_id_int INTEGER",
+                    "transcript_id_int INTEGER",
+                ]
+                for col_name in df_sample.columns:
+                    if col_name in (
+                        "transcript_id_str",
+                        "sample_id_int",
+                        "transcript_id_int",
+                    ):
+                        continue
+                    polars_dtype = df_sample[col_name].dtype
+                    sql_type = sql_dtype_map.get(polars_dtype, "TEXT")
+                    final_table_columns.append(f'"{col_name}" {sql_type}')
+                create_table_sql = (
+                    f"CREATE TABLE {table_name} ({', '.join(final_table_columns)})"
+                )
+                cur.execute(create_table_sql)
+                con.commit()
+                table_created = True
+
             # Convert boolean columns to 0/1 for SQLite
-            for col_name, dtype in schema_dict.items():
-                if dtype == pl.Boolean:
+            for col_name in df_sample.columns:
+                if df_sample[col_name].dtype == pl.Boolean:
                     df_sample = df_sample.with_columns(pl.col(col_name).cast(pl.Int64))
 
-            # Select the final columns for the database, dropping the now-redundant string ID
+            # Select the final columns for the database, dropping the string ID
+            data_columns = [
+                c
+                for c in df_sample.columns
+                if c not in ("transcript_id_str", "sample_id_int", "transcript_id_int")
+            ]
             final_db_columns_for_select = [
                 "sample_id_int",
                 "transcript_id_int",
-            ] + column_names_from_schema[1:]
+            ] + data_columns
             df_to_write = df_sample.select(final_db_columns_for_select)
 
             # Use the ultra-fast CSV to subprocess import method
@@ -1187,14 +1128,11 @@ def process_cache_files(con, cur, cache_path_map, sample_map):
 
         # Extract all necessary data from the loaded pickle
         junction_metrics = cache_data.get("junction_metrics", {})
-        coverage_metrics = cache_data.get("special_feature_counts", {})
 
         # --- Use with-con for automatic transaction per file ---
         with con:
             if junction_metrics:
                 _ingest_junction_data_for_sample(cur, sample_id_int, junction_metrics)
-            if coverage_metrics:
-                _ingest_coverage_data_for_sample(cur, sample_id_int, coverage_metrics)
 
         print(f"    Committed data for sample {sample_name}")
 
@@ -1248,28 +1186,20 @@ def _ingest_junction_data_for_sample(cur, sample_id_int, junction_metrics):
         )
 
 
-def _ingest_coverage_data_for_sample(cur, sample_id_int, coverage_metrics):
-    """Helper to bulk-insert territory coverage data for a single sample."""
-    coverage_data_to_insert = []
-    for region_key, mean_coverage in coverage_metrics.items():
-        try:
-            region_id = int(region_key.split("_")[1])
-            coverage_data_to_insert.append((sample_id_int, region_id, mean_coverage))
-        except (IndexError, ValueError):
-            continue
-
-    if coverage_data_to_insert:
-        cur.executemany(
-            "INSERT INTO territory_coverage VALUES (?, ?, ?)", coverage_data_to_insert
-        )
-
-
 def create_indexes(cur):
     """Creates all indexes on the tables after data has been loaded."""
     print("--- Creating indexes on all tables (this may take a while)... ---")
 
     # Helper function for cleaner code
     def index_table(table, pk_cols, other_indexes=[]):
+        # Skip tables that weren't produced by this run (e.g. priors /
+        # counts_with_confidence are omitted under --light) so index creation
+        # doesn't fail with "no such table".
+        if not cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone():
+            print(f"  Skipping {table} (not present, e.g. --light run)")
+            return
         print(f"  Indexing {table}...")
         if pk_cols:
             pk_sql = f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_pk ON {table} ({', '.join(pk_cols)})"
@@ -1321,13 +1251,6 @@ def create_indexes(cur):
         ["transcript_id_int", "junction_id_int"],
         ["junction_id_int"],
     )
-
-    # --- Indexing Territory Data Tables ---
-    index_table("territory_regions", ["region_id"])
-    index_table(
-        "transcript_territories", ["transcript_id_int", "region_id"], ["region_id"]
-    )
-    index_table("territory_coverage", ["sample_id_int", "region_id"], ["region_id"])
 
     print("Indexing complete.")
 
@@ -1424,17 +1347,13 @@ def main():
                 )
                 sys.exit(1)
         else:
-            sample_map = extract_manifest_metadata(
-                con, cur, args.metadata_file, sample_names
-            )
+            sample_map = extract_manifest_metadata(con, cur, sample_names)
 
         print("Loading annotation data...")
         with gzip.open(annotation_path, "rb") as f:
             anno_data = pickle.load(f)
 
         ingest_annotation_data(con, cur, anno_data)
-        if anno_data.get("subset_coverage_territory_mapping"):
-            ingest_territory_data(con, cur, anno_data)
 
         # Now we can get the transcript map from the annotation data for other ingest functions
         transcript_map = anno_data["string_to_int"]
@@ -1446,8 +1365,8 @@ def main():
             args.output_db,
             "counts_with_confidence",
             per_sample_files_map,
-            "metrics_sparse",  # <-- file_key (key from manifest dictionary)
-            COUNTS_WITH_CONFIDENCE_SCHEMA,
+            "metrics_sparse",
+            COUNTS_WITH_CONFIDENCE_TYPE_OVERRIDES,
             sample_map,
             transcript_map,
         )
@@ -1459,7 +1378,7 @@ def main():
             "priors",
             per_sample_files_map,
             "priors",
-            PRIORS_SCHEMA,
+            PRIORS_TYPE_OVERRIDES,
             sample_map,
             transcript_map,
         )

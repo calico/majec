@@ -3,7 +3,6 @@
 # Key optimization: Replace string transcript IDs with integers to reduce memory usage
 
 import argparse
-import subprocess
 import pandas as pd
 import os
 import sys
@@ -11,14 +10,12 @@ import tempfile
 from collections import defaultdict
 import multiprocessing
 import time
-import shutil
 import json
 import numpy as np
 import gc
 import logging
 import shlex
 import pickle
-import threading
 import traceback
 import gzip
 from pathlib import Path
@@ -33,32 +30,35 @@ from majec.utils.confidence_utils import (
     process_and_save_sample_outputs,
     analyze_competition_patterns,
     decode_transcript_ids,
-    decode_dataframe_columns,
 )
 from majec.utils.group_confidence import (
     run_group_confidence_from_pipeline_parallel_optimized,
 )
 
 from majec.utils.junctions import (
-    parse_junctions_if_requested,
     calculate_junction_confidence_metrics_vectorized,
     calculate_junction_evidence_from_metrics,
     calculate_junction_completeness_position_aware_optimized,
     calculate_subset_penalties_holistic,
-    calculate_territory_adjustment_factors,
 )
 
+from majec import __version__ as MAJEC_VERSION
 from majec.utils.cache import PipelineCache
+from majec.eqc_builder_rust import (
+    run_junction_eqc_builder,
+    RUST_AVAILABLE,
+    builder_provenance,
+)
 
 from majec.utils.pipeline_utils import (
     setup_logging,
-    safe_subprocess_run,
     standard_em_step,
     grouped_momentum_acceleration,
     adaptive_convergence_check,
-    load_precomputed_junction_map,
     get_sample_name_from_bam,
     calculate_effective_length_distributional,
+    calculate_effective_length_empirical,
+    fragment_hist_moments,
 )
 
 # Global variables for multiprocessing workers
@@ -71,9 +71,12 @@ _transcript_junction_order = None
 _transcript_info = None
 _subset_relationships = None
 _splice_competitor_map = None
+
 _transcript_expected_junctions = None
 _gene_map = None
 _te_map = None
+_exon_index = None
+_junction_unstranded = None
 
 
 def init_worker(
@@ -85,18 +88,20 @@ def init_worker(
     transcript_junction_order,
     transcript_info,
     subset_relationships,
-    subset_coverage_territory_mapping,
     splice_competitor_map,
     transcript_expected_junctions,
     gene_map,
     te_map,
+    exon_index,
+    junction_unstranded,
 ):
     """Initialize worker process with ALL read-only mappings."""
     global _int_to_string_map, _string_to_int_map
     global _junction_int_to_string_map, _junction_string_to_int_map
     global _junction_map, _transcript_junction_order, _transcript_info
-    global _subset_relationships, _subset_coverage_territory_mapping, _splice_competitor_map
+    global _subset_relationships, _splice_competitor_map
     global _transcript_expected_junctions, _gene_map, _te_map
+    global _exon_index, _junction_unstranded
 
     _int_to_string_map = int_to_string_map
     _string_to_int_map = string_to_int_map
@@ -106,11 +111,12 @@ def init_worker(
     _transcript_junction_order = transcript_junction_order
     _transcript_info = transcript_info
     _subset_relationships = subset_relationships
-    _subset_coverage_territory_mapping = subset_coverage_territory_mapping
     _splice_competitor_map = splice_competitor_map
     _transcript_expected_junctions = transcript_expected_junctions
     _gene_map = gene_map
     _te_map = te_map
+    _exon_index = exon_index
+    _junction_unstranded = junction_unstranded
 
 
 def init_worker_downstream(
@@ -133,79 +139,6 @@ def init_worker_downstream(
 
 
 #####. string -> int & int -> string mapping functions #####
-def encode_transcript_ids(data, string_to_int, copy=True):
-    """
-    Convert string transcript IDs to integers in various data structures.
-
-    Args:
-        data: Can be DataFrame, Series, dict, or dict of dicts
-        string_to_int: Mapping from string IDs to integers
-        copy: Whether to copy the data structure
-
-    Returns:
-        Data structure with integer IDs
-    """
-    if isinstance(data, pd.DataFrame):
-        df = data.copy() if copy else data
-        if df.index.dtype == "object":  # String index
-            df.index = df.index.map(lambda x: string_to_int.get(x, -1))
-        return df
-
-    elif isinstance(data, pd.Series):
-        s = data.copy() if copy else data
-        if s.index.dtype == "object":  # String index
-            s.index = s.index.map(lambda x: string_to_int.get(x, -1))
-        s.name = data.name
-        return s
-
-    elif isinstance(data, dict):
-        # Check if it's a nested dict (like unique_mapper_groups)
-        first_key = next(iter(data.keys())) if data else None
-        if first_key and isinstance(first_key, tuple):
-            # Dict with tuple keys (equivalence classes)
-            encoded = {}
-            for feature_tuple, value in data.items():
-                encoded_tuple = tuple(string_to_int.get(f, -1) for f in feature_tuple)
-                encoded[encoded_tuple] = value
-            return encoded
-        else:
-            # Simple dict
-            return {string_to_int.get(k, -1): v for k, v in data.items()}
-
-    return data
-
-
-def write_te_locus_coordinates(transcript_info, int_to_string, te_map, prefix):
-    """Write a TSV of genomic coordinates for each individual TE locus."""
-    if te_map is None or transcript_info is None:
-        return None
-    subfamily_by_locus = dict(zip(te_map["LocusID"], te_map["AggregateID"]))
-    rows = []
-    for tid_int, info in transcript_info.items():
-        if info.get("feature_type") != "te":
-            continue
-        rows.append(
-            {
-                "locus_id": int_to_string[tid_int],
-                "chr": info.get("chr"),
-                "start": info.get("start"),
-                "end": info.get("end"),
-                "strand": info.get("strand"),
-                "subfamily": subfamily_by_locus.get(tid_int, ""),
-            }
-        )
-    if not rows:
-        return None
-    path = f"{prefix}_TE_locus_coordinates.tsv"
-    coord_df = pd.DataFrame(
-        rows, columns=["locus_id", "chr", "start", "end", "strand", "subfamily"]
-    )
-    coord_df = coord_df.sort_values(["chr", "start", "end"]).reset_index(drop=True)
-    coord_df.to_csv(path, sep="\t", index=False)
-    logging.info(f"TE locus coordinates saved to: {path} ({len(coord_df)} loci)")
-    return path
-
-
 def _aggregate_by_map(df, id_map):
     """Aggregate a DataFrame's rows using a LocusID -> AggregateID mapping."""
     mask = df.index.isin(id_map["LocusID"].values)
@@ -228,6 +161,47 @@ def _aggregate_genes_and_tes(df, gene_map, te_map):
     if parts:
         return pd.concat(parts)
     return pd.DataFrame()
+
+
+def write_te_locus_coordinates(transcript_info, int_to_string, te_map, prefix):
+    """Write genomic coordinates for each individual TE locus.
+
+    Produces {prefix}_TE_locus_coordinates.tsv with one row per TE locus
+    (feature_type == 'te'), giving chr/start/end/strand and the composite
+    name:family:class subfamily it aggregates into. Lets reviewers locate
+    each individual TE in the genome. Returns the output path, or None if
+    there are no TE loci.
+    """
+    if te_map is None or transcript_info is None:
+        return None
+
+    subfamily_by_locus = dict(zip(te_map["LocusID"], te_map["AggregateID"]))
+    rows = []
+    for tid_int, info in transcript_info.items():
+        if info.get("feature_type") != "te":
+            continue
+        rows.append(
+            {
+                "locus_id": int_to_string[tid_int],
+                "chr": info.get("chr"),
+                "start": info.get("start"),
+                "end": info.get("end"),
+                "strand": info.get("strand"),
+                "subfamily": subfamily_by_locus.get(tid_int, ""),
+            }
+        )
+
+    if not rows:
+        return None
+
+    path = f"{prefix}_TE_locus_coordinates.tsv"
+    coord_df = pd.DataFrame(
+        rows, columns=["locus_id", "chr", "start", "end", "strand", "subfamily"]
+    )
+    coord_df = coord_df.sort_values(["chr", "start", "end"]).reset_index(drop=True)
+    coord_df.to_csv(path, sep="\t", index=False)
+    logging.info(f"TE locus coordinates saved to: {path} ({len(coord_df)} loci)")
+    return path
 
 
 def _apply_bulk_updates(target_df, updates):
@@ -306,6 +280,93 @@ def load_preprocessed_annotations(annotation_file):
             f"({metadata['n_unique_junctions']:,} unique)"
         )
 
+    # Load EqC builder data (precomputed exon index + junction lookup)
+    exon_index = annotation_data.get("exon_index")
+    junction_unstranded = annotation_data.get("junction_unstranded")
+
+    if exon_index is None or junction_unstranded is None:
+        logging.warning(
+            "Annotation lacks precomputed EqC builder data (exon_index, junction_unstranded)."
+        )
+        logging.warning("Building from annotation data at runtime...")
+        from majec.eqc_builder import (
+            build_exon_index_from_annotation,
+            build_junction_unstranded_lookup,
+        )
+
+        # Need transcript_to_exons which isn't stored — fall back to building from GTF
+        if exon_index is None:
+            logging.warning(
+                "  ExonIntervalIndex not in annotation. "
+                "Please regenerate annotation with majec_precompute_annotations to avoid GTF re-parsing."
+            )
+            # Build from GTF at runtime (slow fallback)
+            from majec.eqc_builder import ExonIntervalIndex
+            import gzip as gzip_mod
+
+            gtf_path = metadata["gene_gtf"]
+            logging.info(f"  Building exon index from GTF: {gtf_path}")
+            exon_index = ExonIntervalIndex()
+            string_to_int_local = annotation_data["string_to_int"]
+            opener = gzip_mod.open if gtf_path.endswith(".gz") else open
+            with opener(gtf_path, "rt") as f_gtf:
+                for line in f_gtf:
+                    if line.startswith("#"):
+                        continue
+                    parts = line.split("\t")
+                    if len(parts) < 9 or parts[2] != "exon":
+                        continue
+                    attrs = parts[8]
+                    tid_start = attrs.find('transcript_id "')
+                    if tid_start == -1:
+                        continue
+                    tid_start += 15
+                    tid_end = attrs.find('"', tid_start)
+                    transcript_id = attrs[tid_start:tid_end]
+                    if transcript_id in string_to_int_local:
+                        exon_index.add_exon(
+                            parts[0],
+                            int(parts[3]),
+                            int(parts[4]),
+                            parts[6],
+                            string_to_int_local[transcript_id],
+                        )
+            # Also try TE GTF if present
+            if metadata.get("te_gtf"):
+                te_gtf_path = metadata["te_gtf"]
+                logging.info(f"  Also building from TE GTF: {te_gtf_path}")
+                te_opener = gzip_mod.open if te_gtf_path.endswith(".gz") else open
+                with te_opener(te_gtf_path, "rt") as f_te:
+                    for line in f_te:
+                        if line.startswith("#"):
+                            continue
+                        parts = line.split("\t")
+                        if len(parts) < 9 or parts[2] != "exon":
+                            continue
+                        attrs = parts[8]
+                        tid_start = attrs.find('transcript_id "')
+                        if tid_start == -1:
+                            continue
+                        tid_start += 15
+                        tid_end = attrs.find('"', tid_start)
+                        transcript_id = attrs[tid_start:tid_end]
+                        if transcript_id in string_to_int_local:
+                            exon_index.add_exon(
+                                parts[0],
+                                int(parts[3]),
+                                int(parts[4]),
+                                parts[6],
+                                string_to_int_local[transcript_id],
+                            )
+            exon_index.finalize()
+            logging.info(f"  Built exon index: {exon_index.n_exons:,} exons")
+
+        if junction_unstranded is None:
+            junction_unstranded = build_junction_unstranded_lookup(
+                annotation_data["junction_map"],
+                annotation_data["junction_int_to_string"],
+            )
+
     return (
         annotation_data["string_to_int"],
         annotation_data["int_to_string"],
@@ -318,9 +379,10 @@ def load_preprocessed_annotations(annotation_file):
         annotation_data.get("transcript_info", {}),
         annotation_data.get("transcript_expected_junctions", {}),
         annotation_data.get("subset_relationships", {}),
-        annotation_data.get("subset_coverage_territory_mapping", {}),
         annotation_data.get("junction_competitors", {}),
         metadata,
+        exon_index,
+        junction_unstranded,
     )
 
 
@@ -350,11 +412,16 @@ def parse_cDNA_fragment_stats_json(stats_file_path):
 
 
 def prepare_length_vector(
-    sample_name, bam_path, args, transcript_info, active_transcript_ids
+    sample_name, bam_path, args, transcript_info, active_transcript_ids, frag_hist=None
 ):
     """
     Prepares the length normalization vector for a single sample,
     operating ONLY on the active set of transcripts.
+
+    frag_hist is the {fragment length: weight} histogram the EqC builder
+    measured in cDNA space during its BAM scan.  It is the preferred source;
+    --frag_stats_dir and --mean_fragment_length remain as explicit overrides so
+    older runs stay reproducible.
     """
     # Create a Series of annotated lengths ONLY for the active transcripts
 
@@ -375,9 +442,19 @@ def prepare_length_vector(
     # Return variable with the fallback value
     length_vector = annotated_lengths
 
-    # Try to get a more accurate effective length
+    # Try to get a more accurate effective length.  An explicit CLI source wins
+    # over the measured histogram so a run can be reproduced against the old
+    # numbers; without one, the histogram is used.
     frag_mean, frag_sd = None, None
     if args.frag_stats_dir:
+        if frag_hist:
+            logging.warning(
+                f"[{sample_name}] --frag_stats_dir overrides the fragment distribution "
+                f"measured during the BAM scan. Those JSONs come from tools/"
+                f"fragment_lengths.py, which reads genomic TLEN and so inflates the "
+                f"spread of any library with introns; drop the flag to use the "
+                f"measured distribution instead."
+            )
         logging.info(f"[{sample_name}] getting accurate effective lengths...")
         bam_basename = os.path.basename(bam_path)
         stats_filename = f"{bam_basename.rsplit('.', 1)[0]}_cDNA_frag_stats.json"
@@ -391,7 +468,8 @@ def prepare_length_vector(
         except FileNotFoundError as e:
             logging.error(f"ERROR: {e}")
             logging.warning(
-                f"[{sample_name}] Could not find stats file. Using annotated lengths."
+                f"[{sample_name}] Could not find stats file. Falling back to "
+                f"{'the measured fragment distribution' if frag_hist else 'annotated lengths'}."
             )
 
     elif args.mean_fragment_length:
@@ -414,6 +492,16 @@ def prepare_length_vector(
         length_vector = calculate_effective_length_distributional(
             annotated_lengths, frag_mean, frag_sd  # Pass the small, active set
         )
+    elif frag_hist:
+        n_frag, hist_mean, hist_sd = fragment_hist_moments(frag_hist)
+        logging.info(
+            f"[{sample_name}] Using measured fragment distribution "
+            f"(n={n_frag:,.0f} pairs, mean={hist_mean:.2f}, sd={hist_sd:.2f}, "
+            f"{len(frag_hist):,} bins) for effective lengths."
+        )
+        length_vector = calculate_effective_length_empirical(
+            annotated_lengths, frag_hist
+        )
     else:
         logging.info(
             f"[{sample_name}] No fragment length info found. Using annotated transcript lengths for normalization."
@@ -425,318 +513,6 @@ def prepare_length_vector(
     return length_vector
 
 
-def get_combined_gtf_path(metadata, temp_dir):
-    """
-    Get or create combined GTF path from metadata.
-
-    Args:
-        metadata: Annotation metadata containing GTF paths
-        temp_dir: Temporary directory for combined GTF
-
-
-
-    Returns:
-        str: Path to combined GTF file
-    """
-    gene_gtf = metadata["gene_gtf"]
-    te_gtf = metadata.get("te_gtf")
-    gtfs_to_combine = []
-
-    if not os.path.exists(gene_gtf):
-        raise FileNotFoundError(f"Gene GTF not found: {gene_gtf}")
-    gtfs_to_combine.append(gene_gtf)
-
-    if te_gtf:
-        if not os.path.exists(te_gtf):
-            raise FileNotFoundError(f"TE GTF not found: {te_gtf}")
-        gtfs_to_combine.append(te_gtf)
-
-    # --- Decide if concatenation is needed ---
-    if len(gtfs_to_combine) == 1:
-        # No need to combine, just return the path to the single GTF
-        return gtfs_to_combine[0]
-    else:
-        # We need to concatenate the files.
-        combined_gtf_path = os.path.join(temp_dir, "combined_for_run.gtf")
-        logging.info(f"Creating combined GTF with {len(gtfs_to_combine)} files...")
-
-        # Use a robust `cat` command via subprocess
-        with open(combined_gtf_path, "wb") as outfile:
-            subprocess.run(["cat"] + gtfs_to_combine, stdout=outfile, check=True)
-
-        return combined_gtf_path
-
-
-def read_unique_report_from_fifo_encoded(
-    fifo_path, result_container, sample_name=None, string_to_int=None
-):
-    """Modified version that encodes feature tuples."""
-    unique_mapper_groups = defaultdict(int)
-    unique_mapper_counts = defaultdict(float)
-    lines_processed = 0
-    start_time = time.time()
-
-    log_prefix = f"  [{sample_name}]" if sample_name else "  "
-    unknown_transcript_count = 0
-    try:
-        with open(fifo_path, "r") as fifo:
-            logging.info(f"{log_prefix} FIFO opened, processing report stream...")
-
-            for line in fifo:
-                if line.startswith("#"):
-                    continue
-
-                if "\tAssigned\t" not in line:
-                    continue
-
-                lines_processed += 1
-
-                log_interval = 10_000_000 if lines_processed > 10_000_000 else 5_000_000
-                if lines_processed % log_interval == 0:
-                    elapsed = time.time() - start_time
-                    rate = lines_processed / elapsed
-                    logging.info(
-                        f"{log_prefix}   FIFO processing: {lines_processed/1e6:.1f}M lines, {rate/1000:.0f}K lines/sec"
-                    )
-
-                try:
-                    parts = line.strip().split("\t", 3)
-                    features_int = [
-                        string_to_int[feat.strip()] for feat in parts[3].split(",")
-                    ]
-                except KeyError as e:
-                    unknown_transcript_count += 1
-                    if unknown_transcript_count < 10:
-                        logging.warning(
-                            "################################################################################"
-                        )
-                        logging.warning(
-                            f"[{sample_name}] ###~~~!!!!! Unknown transcript: {e} - skipping line !!!!!~~~###"
-                        )
-                        logging.warning(
-                            "################################################################################"
-                        )
-                    else:
-                        logging.warning(
-                            f"[{sample_name}] Suppressing further unknown transcript warnings..."
-                        )
-                    continue
-
-                # 2. Populate the equivalence classes for the EM.
-                features_tuple = tuple(sorted(features_int))
-                unique_mapper_groups[features_tuple] += 1
-
-                # 3. Do the accounting for the initial counts (simple fractional).
-                count_increment = 1.0 / len(features_int)
-                for feat_int in features_int:
-                    unique_mapper_counts[feat_int] += count_increment
-
-    except Exception as e:
-        logging.error(f"{log_prefix} Error in FIFO processing: {e}")
-        result_container["error"] = str(e)
-        result_container["unique_mapper_groups"] = {}
-        result_container["unique_mapper_counts"] = {}
-
-    finally:
-        # Store results
-        elapsed = time.time() - start_time
-        logging.info(
-            f"{log_prefix} FIFO processing complete: {lines_processed/1e6:.1f}M lines in {elapsed:.1f}s ({lines_processed/elapsed/1000:.0f}K lines/sec)"
-        )
-        result_container["unique_mapper_groups"] = dict(unique_mapper_groups)
-        result_container["unique_mapper_counts"] = dict(unique_mapper_counts)
-
-
-def read_multimapper_report_from_fifo_with_counts(
-    fifo_path, result_container, sample_name=None, string_to_int=None
-):
-    """
-    Parse FIFO to create BOTH equivalence classes AND proper fractional counts.
-    """
-    read_to_features = defaultdict(set)
-    lines_processed = 0
-    start_time = time.time()
-
-    log_prefix = f"  [{sample_name}]" if sample_name else "  "
-
-    try:
-        with open(fifo_path, "r") as fifo:
-            logging.info(f"{log_prefix} FIFO opened, processing multi-mapper report...")
-
-            for line in fifo:
-                if line.startswith("#"):
-                    continue
-
-                if "\tAssigned\t" not in line:
-                    continue
-
-                lines_processed += 1
-
-                parts = line.strip().split("\t", 3)
-                if len(parts) >= 4 and parts[3] != "NA":
-                    read_id = parts[0]
-                    feature_string = parts[3]
-
-                    # Encode features
-                    features = []
-                    for feat in feature_string.split(","):
-                        feat = feat.strip()
-                        features.append(string_to_int[feat])
-
-                    if features:
-                        read_to_features[read_id].update(features)
-
-        logging.info(
-            f"{log_prefix} FIFO parsing completed: {lines_processed:,} assignment lines, "
-            f"{len(read_to_features):,} unique reads"
-        )
-
-        # Create equivalence classes
-        multimapper_groups = defaultdict(int)
-
-        # Create fractional counts
-        feature_counts = defaultdict(float)
-
-        for read_id, feature_set in read_to_features.items():
-            if feature_set:
-                # Equivalence class: count read once
-                features_tuple = tuple(sorted(feature_set))
-                multimapper_groups[features_tuple] += 1
-
-                # Fractional counts: each feature gets 1/N of read
-                fraction = 1.0 / len(feature_set)
-                for feature in feature_set:
-                    feature_counts[feature] += fraction
-
-        # Clean up
-        del read_to_features
-
-        # Return both results
-        result_container["multimapper_groups"] = dict(multimapper_groups)
-        result_container["multimapper_counts"] = dict(feature_counts)
-
-        logging.info(
-            f"{log_prefix} Created {len(multimapper_groups):,} equivalence classes"
-        )
-        logging.info(
-            f"{log_prefix} Total fractional counts: {sum(feature_counts.values()):.0f}"
-        )
-
-    except Exception as e:
-        logging.error(f"{log_prefix} Error in FIFO processing: {e}")
-        result_container["error"] = str(e)
-        result_container["multimapper_groups"] = {}
-        result_container["multimapper_counts"] = {}
-
-
-def get_special_feature_counts_bedtools(
-    bam_file_path,
-    bed_file_path,
-    genomie_file_path,
-    strand_specific=True,  # Should almost always be True for RNA-seq
-):
-    """
-    Uses bedtools coverage to get read counts for the special MAJEC features.
-
-    This function is a direct, robust replacement for using featureCounts for this task,
-    correctly measuring physical read overlap.
-
-    Args:
-        bam_file_path (str): The full path to the coordinate-sorted, indexed BAM file.
-        bed_file_path (str): The full path to the special features BED file.
-        strand_specific (bool): Whether to perform stranded counting (-s flag).
-
-    Returns:
-        dict: A dictionary of {feature_id: count}, e.g., {'REGION_1': 50, 'REGION_2': 120}.
-              Returns an empty dictionary if the process fails.
-    """
-    sample_name = os.path.basename(bam_file_path)
-    logging.info(
-        f"  [{sample_name}] Getting special feature coverage using bedtools..."
-    )
-
-    # --- Step 1: Construct the bedtools command ---
-
-    # Base command
-    cmd_parts = [
-        "bedtools",
-        "coverage",
-        "-a",
-        bed_file_path,
-        "-b",
-        bam_file_path,
-        "-g",
-        genomie_file_path,
-        "-split",
-        "-mean",  # the -mean flag is not mentioned in the bedtools documentation but clearly works in practice for v2.31.1
-        "-sorted",
-    ]
-    if strand_specific:
-        cmd_parts.append("-s")
-
-    command_string = shlex.join(cmd_parts)
-    # --- Step 2: Execute the command safely ---
-
-    try:
-        # The wrapper handles the execution and the CalledProcessError.
-        # It will log any errors automatically.
-        result = safe_subprocess_run(
-            command_string, description=f"bedtools coverage for {sample_name}"
-        )
-
-        # We only proceed if the command was successful.
-        # The wrapper returns the result object on success.
-
-    except FileNotFoundError:
-        # This can still happen if `bedtools` itself is not installed.
-        logging.error(
-            "FATAL: `bedtools` command not found. Please ensure it is installed and in your PATH."
-        )
-        raise
-
-    except Exception as e:
-        # Catch any other unexpected errors from the wrapper
-        logging.error(
-            f"  [{sample_name}] An unexpected error occurred while running bedtools: {e}"
-        )
-        return {}
-
-    # --- Step 3: Parse the tab-separated output ---
-
-    # The output of `bedtools coverage -counts` is a BED file with the count in the last column.
-    # We can use pandas.read_csv for a very fast and robust way to parse this.
-    try:
-        from io import StringIO
-
-        # The stdout is in the .stdout attribute of the result object
-        stdout_text = result.stdout
-
-        col_names = [
-            "chrom",
-            "start",
-            "end",
-            "feature_id",
-            "score",
-            "strand",
-            "mean_coverage",
-        ]
-
-        df = pd.read_csv(StringIO(stdout_text), sep="\t", header=None, names=col_names)
-
-        counts_dict = df.set_index("feature_id")["mean_coverage"].to_dict()
-
-    except Exception as e:
-        logging.error(
-            f"  [{sample_name}] Failed to parse the output from bedtools: {e}"
-        )
-        return {}
-
-    logging.info(
-        f"  [{sample_name}] Successfully quantified mean coverage for {len(counts_dict)} special features."
-    )
-    return counts_dict
-
-
 def _build_pipeline_context(annotation_metadata):
     """Build pipeline context dict from global worker state."""
     return {
@@ -746,11 +522,12 @@ def _build_pipeline_context(annotation_metadata):
         "transcript_junction_order": _transcript_junction_order,
         "transcript_info": _transcript_info,
         "subset_relationships": _subset_relationships,
-        "subset_coverage_territory_mapping": _subset_coverage_territory_mapping,
         "splice_competitor_map": _splice_competitor_map,
         "transcript_expected_junctions": _transcript_expected_junctions,
         "gene_map": _gene_map,
         "te_map": _te_map,
+        "exon_index": _exon_index,
+        "junction_unstranded": _junction_unstranded,
         "annotation_metadata": annotation_metadata,
     }
 
@@ -787,19 +564,14 @@ def _process_sample_cached(
     shared_cache,
     args,
 ):
-    """Process a sample using cached featureCounts results."""
+    """Process a sample using cached EqC results."""
     cache_data = cache_manager.load_sample_cache(cache_path)
-    logging.info(f"[{sample_name}] Using cached featureCounts results")
+    logging.info(f"[{sample_name}] Using cached EqC results")
 
     initial_unique_counts = cache_data["initial_unique_counts"]
     unique_mapper_groups = cache_data["unique_mapper_groups"]
     cached_junction_metrics = cache_data.get("junction_metrics", {})
-    if args.use_subset_coverage_data:
-        special_feature_counts_series = pd.Series(
-            cache_data.get("special_feature_counts", {})
-        )
-    else:
-        special_feature_counts_series = pd.Series({})
+    special_feature_counts_series = pd.Series({})
     special_feature_counts_series.name = sample_name
 
     junction_evidence = {}
@@ -837,6 +609,10 @@ def _process_sample_cached(
         "has_multimapper_data": cache_data.get("has_multimapper_data", False),
         "initial_multimapper_counts": cache_data.get("initial_multimapper_counts"),
         "multimapper_classes": cache_data.get("multimapper_classes"),
+        # Both are absent from caches written before the parser measured them;
+        # the consumers of each report the fallback rather than taking it silently.
+        "median_read_length": cache_data.get("median_read_length"),
+        "fragment_length_hist": cache_data.get("fragment_length_hist"),
     }
 
     logging.info(
@@ -850,10 +626,15 @@ def _process_sample_cached(
     )
 
 
+# --derive_multiplicity is a tri-state, not a flag: "off" has to be expressible
+# so a no-NH BAM can still be run the old way for comparison, and that is not the
+# same statement as "decide for me".
+_DERIVE_MULTIPLICITY = {"auto": None, "on": True, "off": False}
+
+
 def _process_sample_fresh(
     sample_name,
     bam_path,
-    combined_gtf_path,
     pipeline_context,
     shared_cache,
     cache_manager,
@@ -862,78 +643,70 @@ def _process_sample_fresh(
     temp_dir,
     args,
 ):
-    """Process a sample from scratch via featureCounts."""
+    """Process a sample from scratch using the junction-aware EqC builder."""
     sample_start_time = time.time()
     cache_path = None
-    include_junctions = _junction_map is not None
 
-    logging.info(
-        f"  [{sample_name}] Starting processing with {threads_per_worker} threads..."
-    )
-    fc_start = time.time()
+    logging.info(f"  [{sample_name}] Starting EqC builder processing...")
+    eqc_start = time.time()
 
-    result = run_featurecounts_with_junctions_encoded(
-        [bam_path],
-        combined_gtf_path,
-        args.strandedness,
-        threads_per_worker,
-        args.paired_end,
-        extra_args="-Q 30 -O --fraction",
-        report_format="CORE",
-        temp_dir=temp_dir,
-        include_junctions=include_junctions,
+    # Single-pass BAM scan replaces 3-pass featureCounts flow
+    eqc_result = run_junction_eqc_builder(
+        bam_path,
+        exon_index=_exon_index,
+        junction_unstranded=_junction_unstranded,
         string_to_int=_string_to_int_map,
+        junction_map=_junction_map["junction_map"],
+        junction_int_to_string=_junction_int_to_string_map,
+        junction_string_to_int=_junction_string_to_int_map,
+        strandedness=args.strandedness,
+        paired_end=args.paired_end,
+        min_mapq=30,
         sample_name=sample_name,
+        use_alignment_scoring=getattr(args, "use_alignment_scoring", False),
+        as_temperature=getattr(args, "as_temperature", 10.0),
+        derive_multiplicity=_DERIVE_MULTIPLICITY[
+            getattr(args, "derive_multiplicity", "auto")
+        ],
+        lr_score_ratio=getattr(args, "lr_score_ratio", 0.0),
+        lr_min_mapq=getattr(args, "lr_min_mapq", None),
     )
 
-    (
-        initial_unique_counts,
-        um_report_path,
-        um_fc_dir,
-        junction_file,
-        unique_mapper_groups,
-    ) = result
-    fc_elapsed = time.time() - fc_start
+    initial_unique_counts = eqc_result["initial_unique_counts"]
+    unique_mapper_groups = eqc_result["unique_mapper_groups"]
+    junction_metrics = eqc_result["junction_metrics"]
+
+    # Extract median read length from EqC builder stats (Rust samples first 10K reads)
+    median_read_length = eqc_result.get("stats", {}).get("median_read_length", None)
+
+    # Fragment length distribution measured in cDNA space during the same scan,
+    # {length: weight}.  Consumed by prepare_length_vector for TPM effective
+    # lengths; empty for single-end libraries.
+    fragment_length_hist = eqc_result.get("stats", {}).get("fragment_length_hist", None)
+
+    eqc_elapsed = time.time() - eqc_start
+    logging.info(f"  [{sample_name}] EqC builder completed in {eqc_elapsed:.1f}s")
     logging.info(
-        f"  [{sample_name}] FeatureCounts completed in {fc_elapsed:.1f}s (used FIFO)"
-    )
-    logging.info(
-        f"  [{sample_name}] Found {len(unique_mapper_groups):,} equivalence groups"
+        f"  [{sample_name}] Found {len(unique_mapper_groups):,} unique equivalence groups, "
+        f"{len(eqc_result['multimapper_classes']):,} multi groups"
     )
 
-    # Special feature coverage
-    if args.use_subset_coverage_data:
-        logging.info(
-            f"[{sample_name}] starting subset feature coverage quantification..."
-        )
-        special_feature_counts = get_special_feature_counts_bedtools(
-            bam_path,
-            annotation_metadata.get("subset_coverage_features_bed_path"),
-            annotation_metadata.get("genome_file_path"),
-            strand_specific=(args.strandedness != 0),
-        )
-        logging.info(
-            f"[{sample_name}] obtained {len(special_feature_counts)} special feature counts"
-        )
-    else:
-        special_feature_counts = {}
-
-    special_feature_counts_series = pd.Series(special_feature_counts)
+    special_feature_counts_series = pd.Series({})
     special_feature_counts_series.name = sample_name
 
-    # Junction processing
+    # Junction evidence from metrics (same path as cached flow)
     junction_evidence = {}
-    junction_metrics = {}
     modified_unique_counts = initial_unique_counts
 
-    if include_junctions and junction_file and os.path.exists(junction_file):
-        args.threads_per_worker = threads_per_worker
-        junction_evidence, junction_metrics = parse_junctions_if_requested(
-            args,
-            junction_file,
-            [bam_path],
-            pipeline_context,
-            junction_string_to_int=_junction_string_to_int_map,
+    if junction_metrics:
+        junction_evidence = calculate_junction_evidence_from_metrics(
+            junction_metrics,
+            _junction_map["junction_map"],
+            junction_weight=args.junction_weight,
+            decay_exponent=args.junction_decay_exponent,
+        )
+        logging.info(
+            f"[{sample_name}] Calculated evidence for {len(junction_evidence)} transcripts"
         )
 
         modified_unique_counts = _apply_priors_if_needed(
@@ -946,26 +719,28 @@ def _process_sample_fresh(
             args,
         )
 
-        # Save to disk cache
-        if not args.read_only_cache and cache_manager:
-            cache_key, key_factors = cache_manager.get_cache_key(
-                bam_path, annotation_metadata, args
-            )
-            cache_path = cache_manager.get_sample_cache_path(sample_name, cache_key)
-            cache_manager.save_sample_cache(
-                sample_name,
-                cache_key,
-                {
-                    "initial_unique_counts": initial_unique_counts,
-                    "unique_mapper_groups": unique_mapper_groups,
-                    "special_feature_counts": special_feature_counts,
-                    "junction_metrics": junction_metrics,
-                    "has_multimapper_data": False,
-                },
-                key_factors,
-            )
-
-    shutil.rmtree(um_fc_dir)
+    # Save to disk cache — now includes multimapper data from the start
+    if not args.read_only_cache and cache_manager:
+        cache_key, key_factors = cache_manager.get_cache_key(
+            bam_path, annotation_metadata, args
+        )
+        cache_path = cache_manager.get_sample_cache_path(sample_name, cache_key)
+        cache_manager.save_sample_cache(
+            sample_name,
+            cache_key,
+            {
+                "initial_unique_counts": initial_unique_counts,
+                "unique_mapper_groups": unique_mapper_groups,
+                "special_feature_counts": {},
+                "junction_metrics": junction_metrics,
+                "has_multimapper_data": True,
+                "multimapper_classes": dict(eqc_result["multimapper_classes"]),
+                "initial_multimapper_counts": eqc_result["initial_multimapper_counts"],
+                "median_read_length": median_read_length,
+                "fragment_length_hist": fragment_length_hist,
+            },
+            key_factors,
+        )
 
     shared_cache[sample_name] = {
         "initial_unique_counts": initial_unique_counts,
@@ -974,6 +749,11 @@ def _process_sample_fresh(
         "junction_evidence": junction_evidence,
         "bam_path": bam_path,
         "junction_metrics": junction_metrics,
+        "has_multimapper_data": True,
+        "initial_multimapper_counts": eqc_result["initial_multimapper_counts"],
+        "multimapper_classes": eqc_result["multimapper_classes"],
+        "median_read_length": median_read_length,
+        "fragment_length_hist": fragment_length_hist,
     }
 
     total_elapsed = time.time() - sample_start_time
@@ -986,10 +766,9 @@ def _process_sample_fresh(
 
 
 def process_sample_for_caching_encoded(args_tuple):
-    """Process a single sample: use cache if valid, otherwise run featureCounts fresh."""
+    """Process a single sample: use cache if valid, otherwise run EqC builder fresh."""
     (
         bam_path,
-        combined_gtf_path,
         args,
         temp_dir,
         threads_per_worker,
@@ -1002,7 +781,6 @@ def process_sample_for_caching_encoded(args_tuple):
     global _string_to_int_map, _junction_string_to_int_map
     global _junction_map, _transcript_junction_order, _transcript_info
     global _subset_relationships, _splice_competitor_map
-    global _subset_coverage_territory_mapping
 
     pipeline_context = _build_pipeline_context(annotation_metadata)
 
@@ -1031,7 +809,6 @@ def process_sample_for_caching_encoded(args_tuple):
         return _process_sample_fresh(
             sample_name,
             bam_path,
-            combined_gtf_path,
             pipeline_context,
             shared_cache,
             cache_manager,
@@ -1044,186 +821,6 @@ def process_sample_for_caching_encoded(args_tuple):
         logging.warning(f"    Failed to process {sample_name}: {e}")
         traceback.print_exc()
         return np.array([])
-
-
-def run_featurecounts_with_junctions_encoded(
-    bam_files,
-    combined_gtf,
-    strandedness,
-    threads,
-    is_paired_end,
-    extra_args="",
-    report_format=None,
-    temp_dir=".",
-    include_junctions=False,
-    string_to_int=None,
-    sample_name=None,
-    is_multimapper=False,
-):
-    """
-    Modified version of run_featurecounts_with_junctions_encoded that uses FIFO processing with tempfile backup.
-
-    Args:
-        bam_files: List of BAM files
-        combined_gtf: GTF annotation file
-        strandedness: Strand specificity setting
-        threads: Number of threads
-        is_paired_end: Whether data is paired-end
-        extra_args: Additional featureCounts arguments
-        report_format: Report format (e.g., "CORE")
-        temp_dir: Temporary directory
-        include_junctions: Whether to include junctions
-        string_to_int: ID mapping
-        sample_name: Sample name for logging
-        is_multimapper: Whether processing multi-mappers (determines FIFO processor)
-
-    Returns:
-        Tuple of (counts_df, report_path, fc_temp_dir, junction_file_path, equivalence_groups)
-    """
-    fc_temp_dir = tempfile.mkdtemp(dir=temp_dir)
-    output_path = os.path.join(fc_temp_dir, "fc_output.tsv")
-
-    # Use the first BAM file's name for the report
-    bam_basename = os.path.basename(bam_files[0])
-    report_fifo = os.path.join(fc_temp_dir, f"{bam_basename}.featureCounts")
-
-    paired_end_flag = "-p" if is_paired_end else ""
-    junction_flag = "-J" if include_junctions else ""
-    report_flag = f"-R {report_format}" if report_format else ""
-
-    quoted_bams = " ".join(f'"{b}"' for b in bam_files)
-    cmd = (
-        f'featureCounts -a "{combined_gtf}" -o "{output_path}" -s {strandedness} '
-        f"-T {threads} -t exon -g transcript_id {paired_end_flag} {extra_args} "
-        f"{report_flag} {junction_flag} {quoted_bams}"
-    )
-
-    logging.info(f"  ... featureCounts command: {cmd}")
-
-    # Try FIFO approach first
-    try:
-        # Create FIFO
-        os.mkfifo(report_fifo)
-
-        # Initialize container and choose processor based on mode
-        if is_multimapper:
-            result_container = {
-                "multimapper_groups": None,
-                "multimapper_counts": None,
-                "error": None,
-            }
-            fifo_processor = read_multimapper_report_from_fifo_with_counts
-            logging.info(f"  ... Using multi-mapper FIFO processor")
-        else:
-            result_container = {
-                "unique_mapper_groups": None,
-                "unique_mapper_counts": None,
-                "error": None,
-            }
-            fifo_processor = read_unique_report_from_fifo_encoded
-            logging.info(f"  ... Using unique mapper FIFO processor")
-
-        # Start reader thread with correct processor
-        reader_thread = threading.Thread(
-            target=fifo_processor,
-            args=(report_fifo, result_container, sample_name, string_to_int),
-        )
-        reader_thread.start()
-
-        time.sleep(0.5)  # Give reader time to start
-
-        # Run featureCounts
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=fc_temp_dir,
-        )
-
-        stdout, stderr = process.communicate()
-
-        if process.returncode != 0:
-            raise RuntimeError(f"FeatureCounts failed: {stderr}")
-
-        reader_thread.join(timeout=120)
-
-        if reader_thread.is_alive():
-            logging.error("Report reader thread timed out!")
-            raise RuntimeError("Reader timeout")
-
-        if result_container.get("error"):
-            raise RuntimeError(f"FIFO processing error: {result_container['error']}")
-
-    except Exception as e:
-        logging.warning(f"  [{sample_name}] FIFO approach failed: {e}")
-        logging.warning(f"  [{sample_name}] Falling back to file-based approach...")
-
-        # Clean up FIFO
-        try:
-            os.unlink(report_fifo)
-        except:
-            pass
-
-        # Re-run featureCounts to disk
-        process = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, cwd=fc_temp_dir
-        )
-
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"FeatureCounts failed even without FIFO: {process.stderr}"
-            )
-
-        # Read from file using correct processor based on mode
-        if is_multimapper:
-            result_container = {
-                "multimapper_groups": None,
-                "multimapper_counts": None,
-                "error": None,
-            }
-            read_multimapper_report_from_fifo_with_counts(
-                report_fifo, result_container, sample_name, string_to_int
-            )
-        else:
-            result_container = {
-                "unique_mapper_groups": None,
-                "unique_mapper_counts": None,
-                "error": None,
-            }
-            read_unique_report_from_fifo_encoded(
-                report_fifo, result_container, sample_name, string_to_int
-            )
-
-    finally:
-        # Clean up FIFO if it still exists
-        try:
-            os.unlink(report_fifo)
-        except:
-            pass
-
-    # Return based on mode
-    junction_file_path = f"{output_path}.jcounts" if include_junctions else None
-
-    if is_multimapper:
-        logging.info(f"  ... Multi-mapper mode: returning FIFO-derived data")
-        return report_fifo, fc_temp_dir, junction_file_path, result_container
-    else:
-        logging.info(f"  ... Unique mapper mode: returning counts DataFrame")
-        sparse_counts_series = pd.Series(
-            result_container.get("unique_mapper_counts", {})
-        )
-        all_transcript_ids = range(len(string_to_int))
-        counts_df = sparse_counts_series.reindex(all_transcript_ids, fill_value=0.0)
-        counts_df.name = sample_name
-        return (
-            counts_df,
-            report_fifo,
-            fc_temp_dir,
-            junction_file_path,
-            result_container.get("unique_mapper_groups", {}),
-        )
 
 
 def _apply_junction_boosts(
@@ -1448,8 +1045,6 @@ def _apply_completeness_penalties(
             library_type=args.library_type,
             splice_competitor_map=pipeline_context.get("splice_competitor_map", {}),
             junction_map=pipeline_context["junction_map"]["junction_map"],
-            use_paired_rescue=args.use_paired_rescue,
-            paired_rescue_decay=args.paired_rescue_decay,
         )
     )
 
@@ -1546,7 +1141,7 @@ def _apply_subset_penalties(
     pipeline_context,
     args,
 ):
-    """Step 4: Calculate and apply subset isoform penalties with territory evidence."""
+    """Step 4: Calculate and apply subset isoform penalties."""
     logging.info(f"    [{sample_name}] calculating subset penalties...")
 
     nonzero_counts = initial_counts[initial_counts > 0]
@@ -1561,8 +1156,6 @@ def _apply_subset_penalties(
             ("original_subset_penalty", 1.0),
             ("subset_z_score", np.nan),
             ("adjusted_subset_penalty", np.nan),
-            ("territory_confidence", np.nan),
-            ("territory_evidence_ratio", np.nan),
         ]:
             prior_tracking[col] = default
 
@@ -1577,20 +1170,6 @@ def _apply_subset_penalties(
         overdispersion=args.subset_penalty_overdispersion,
         expression_scale_factor=expression_scale,
     )
-
-    territory_mapping = pipeline_context.get("subset_coverage_territory_mapping", {})
-    if territory_mapping and len(special_feature_counts) > 0:
-        logging.info(
-            f"    [{sample_name}] calculating coverage-based adjustments to subset penalties..."
-        )
-        territory_evidence = calculate_territory_adjustment_factors(
-            special_feature_counts, territory_mapping
-        )
-    else:
-        logging.info(
-            f"    [{sample_name}] no territory data, skipping coverage-based adjustments"
-        )
-        territory_evidence = {}
 
     logging.info(
         f"    [{sample_name}] Applying combined subset penalties with penalty combination..."
@@ -1607,8 +1186,6 @@ def _apply_subset_penalties(
                 "original_subset_penalty",
                 "subset_z_score",
                 "adjusted_subset_penalty",
-                "territory_confidence",
-                "territory_evidence_ratio",
                 "penalty_combination_strategy",
             ]
         }
@@ -1622,23 +1199,11 @@ def _apply_subset_penalties(
         active_subset_details = subset_details
 
     for transcript_int, details in active_subset_details.items():
-        evidence = territory_evidence.get(transcript_int)
         initial_subset_penalty_value = details.get("penalty", 1.0)
         completeness_penalty = model_details.get(transcript_int, {}).get("penalty", 1.0)
         has_completeness = completeness_penalty < 1.0
 
-        if evidence:
-            evidence_ratio = evidence["evidence_ratio"]
-            confidence = evidence["confidence"]
-            if evidence_ratio < initial_subset_penalty_value:
-                territory_penalty = evidence_ratio
-            else:
-                territory_penalty = (
-                    (1 - confidence) * initial_subset_penalty_value
-                ) + (confidence * evidence_ratio)
-            final_penalty = _combine_penalties(territory_penalty, completeness_penalty)
-            penalty_strategy = "comb_territory_completeness"
-        elif has_completeness:
+        if has_completeness:
             final_penalty = _combine_penalties(
                 completeness_penalty, initial_subset_penalty_value
             )
@@ -1656,11 +1221,6 @@ def _apply_subset_penalties(
         modified_counts[transcript_int] *= adjustment_factor
 
         if subset_updates is not None:
-            if evidence:
-                subset_updates["territory_confidence"][transcript_int] = confidence
-                subset_updates["territory_evidence_ratio"][
-                    transcript_int
-                ] = evidence_ratio
             subset_updates["is_subset"][transcript_int] = bool(details["is_subset"])
             subset_updates["original_subset_penalty"][
                 transcript_int
@@ -1766,6 +1326,9 @@ def _write_prior_tracking_report(sample_name, prior_tracking, args):
         ),
     }
 
+    # One row per sample, appended by the workers. main() removes any summary
+    # left by an earlier run with the same prefix before the workers start, so
+    # the file no longer accumulates rows across reruns.
     summary_file = f"{args.prefix}_prior_adjustment_summary.tsv"
     if not os.path.exists(summary_file):
         with open(summary_file, "w") as f:
@@ -1842,7 +1405,6 @@ def create_junction_informed_priors_encoded_with_penalties(
 def calculate_global_thresholds_and_cache_results_encoded(
     pipeline_context,
     all_bam_paths,
-    combined_gtf_path,
     args,
     temp_dir,
     string_to_int,
@@ -1874,7 +1436,6 @@ def calculate_global_thresholds_and_cache_results_encoded(
         pool_args = [
             (
                 bam_path,
-                combined_gtf_path,
                 args,
                 temp_dir,
                 threads_per_worker,
@@ -1886,6 +1447,12 @@ def calculate_global_thresholds_and_cache_results_encoded(
         ]
 
         # Process with initialized workers
+        # Workers append one row per sample to the prior summary while applying
+        # priors; start it fresh so a rerun with the same prefix does not keep the
+        # previous run's rows.
+        _stale_summary = f"{args.prefix}_prior_adjustment_summary.tsv"
+        if os.path.exists(_stale_summary):
+            os.remove(_stale_summary)
         with multiprocessing.Pool(
             processes=min(args.threads, len(all_bam_paths)),
             initializer=init_worker,
@@ -1898,11 +1465,12 @@ def calculate_global_thresholds_and_cache_results_encoded(
                 pipeline_context["transcript_junction_order"],
                 pipeline_context["transcript_info"],
                 pipeline_context["subset_relationships"],
-                pipeline_context["subset_coverage_territory_mapping"],
                 pipeline_context["splice_competitor_map"],
                 pipeline_context["transcript_expected_junctions"],
                 pipeline_context["gene_map"],
                 pipeline_context["te_map"],
+                pipeline_context["exon_index"],
+                pipeline_context["junction_unstranded"],
             ),
         ) as pool:
             pool_results = pool.map(process_sample_for_caching_encoded, pool_args)
@@ -1950,121 +1518,37 @@ def calculate_global_thresholds_and_cache_results_encoded(
 
 def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     """Modified to work with integer IDs throughout."""
-    (
-        sample_cache_data,
-        global_data,
-        bam_path,
-        args,
-        combined_gtf_path,
-        temp_dir,
-        threads_per_worker,
-    ) = args_tuple
+    sample_cache_data, global_data, bam_path, args, temp_dir, threads_per_worker = (
+        args_tuple
+    )
     sample_name = get_sample_name_from_bam(bam_path)
 
     # Use global mappings
     global _string_to_int_map, _int_to_string_map, _transcript_info
 
     logging.info(
-        f"[{sample_name}] Starting Joint EM process (1/4) Processing multi-mappers..."
+        f"[{sample_name}] Starting Joint EM process (1/4) Loading multi-mapper data..."
     )
 
     # --- 1. MULTIMAPPER PROCESSING ---
-    # Check if we have cached multimapper data
+    # EqC builder produces multimapper data in the same pass as unique mappers,
+    # so cache always has has_multimapper_data=True for new caches.
     if sample_cache_data and sample_cache_data.get("has_multimapper_data", False):
-        # Load multimapper data from cache
-        logging.info(f"[{sample_name}]  (1/4) Using cached multi-mapper results ✨")
+        logging.info(f"[{sample_name}]  (1/4) Using cached multi-mapper results")
         initial_multimapper_counts = sample_cache_data.get(
             "initial_multimapper_counts", pd.Series(dtype=np.float64)
         )
         multimapper_classes = sample_cache_data.get("multimapper_classes", {})
-
-        # Convert back to defaultdict
         multimapper_classes = defaultdict(int, multimapper_classes)
     else:
-        # Normal multimapper processing
-        logging.info(f"[{sample_name}]  (1/4) Processing multi-mappers...")
-        if not sample_cache_data:
-            logging.info(f"[{sample_name}]   - No sample_cache_data")
-        else:
-            logging.info(
-                f"[{sample_name}]   - has_multimapper_data = {sample_cache_data.get('has_multimapper_data', 'NOT FOUND')}"
-            )
-        multi_bam = os.path.join(temp_dir, f"{sample_name}_multi_mappers.bam")
-        filter_expr = "mapq < 30"
-        safe_subprocess_run(
-            f"samtools view -h -@ {threads_per_worker} -e "
-            f"'{filter_expr}'"
-            f' -o "{multi_bam}" "{bam_path}"',
-            "filtering for multi-mappers",
+        logging.error(
+            f"[{sample_name}] No multimapper data in cache. "
+            f"This cache was created with the old featureCounts pipeline. "
+            f"Please rebuild with --rebuild_cache."
         )
-
-        # Check if multi-mapper BAM has any reads
-        read_count = int(
-            subprocess.check_output(
-                f'samtools view -c "{multi_bam}"', shell=True
-            ).strip()
+        raise RuntimeError(
+            f"Cache for {sample_name} lacks multimapper data. Rebuild with --rebuild_cache."
         )
-
-        if read_count == 0:
-            logging.info(f"[{sample_name}] No multi-mappers found, using zero counts")
-            initial_multimapper_counts = pd.Series(dtype=np.float64)
-            multimapper_classes = defaultdict(int)
-        else:
-            mm_result = run_featurecounts_with_junctions_encoded(
-                [multi_bam],
-                combined_gtf_path,
-                args.strandedness,
-                threads_per_worker,
-                args.paired_end,
-                extra_args="-M -O --fraction",
-                report_format="CORE",
-                temp_dir=temp_dir,
-                include_junctions=False,
-                string_to_int=_string_to_int_map,
-                sample_name=sample_name,
-                is_multimapper=True,  # Tell it this is multi-mapper processing
-            )
-
-            mm_report_path, mm_fc_dir, _, mm_groups_from_fifo = mm_result
-            multimapper_classes = defaultdict(int)
-            for feature_set, count in mm_groups_from_fifo["multimapper_groups"].items():
-                multimapper_classes[frozenset(feature_set)] += count
-
-            mm_fractional_counts = mm_groups_from_fifo["multimapper_counts"]
-            initial_multimapper_counts = pd.Series(
-                mm_fractional_counts, dtype=np.float64
-            )
-
-            logging.info(f"#######[{sample_name}] Cache update check:########")
-            logging.info(f"  sample_cache_data exists: {sample_cache_data is not None}")
-            logging.info(f"  sample_cache_data truthy: {bool(sample_cache_data)}")
-            logging.info(f"  args.use_cache: {args.use_cache}")
-            logging.info(
-                f"  cache_manager in global_data: {'cache_manager' in global_data}"
-            )
-
-            if not args.read_only_cache:
-                if sample_cache_data and args.use_cache:
-                    cache_manager = global_data["cache_manager"]
-                    multimapper_cache_data = {
-                        "initial_multimapper_counts": initial_multimapper_counts,
-                        "multimapper_classes": dict(
-                            multimapper_classes
-                        ),  # Convert from defaultdict
-                    }
-                    success = cache_manager.update_sample_cache_with_multimapper_data(
-                        sample_name, multimapper_cache_data
-                    )
-
-                    if success:
-                        logging.info(f"[{sample_name}] Cache updated successfully")
-                    else:
-                        logging.warning(
-                            f"[{sample_name}] Failed to update cache with multimapper data"
-                        )
-
-            shutil.rmtree(mm_fc_dir)
-            os.remove(multi_bam)
 
     # --- 2. UNIQUE MAPPER PROCESSING (use cache) ---
     junction_evidence = {}
@@ -2164,12 +1648,30 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     )
 
     if args.output_tpm:
+        frag_hist = (
+            sample_cache_data.get("fragment_length_hist") if sample_cache_data else None
+        )
+        if not frag_hist and not args.frag_stats_dir and not args.mean_fragment_length:
+            if not getattr(args, "paired_end", True):
+                logging.warning(
+                    f"[{sample_name}] Single-end library: fragment lengths are not "
+                    f"measurable, so TPM uses annotated transcript lengths. Pass "
+                    f"--mean_fragment_length to supply an effective length model."
+                )
+            else:
+                logging.warning(
+                    f"[{sample_name}] TPM requested but no fragment length histogram "
+                    f"is attached to this sample. Caches written before the parser "
+                    f"measured it have none - rerun with --rebuild_cache for empirical "
+                    f"effective lengths. Falling back to annotated transcript lengths."
+                )
         length_vector = prepare_length_vector(
             sample_name,
             bam_path,
             args,
             _transcript_info,  # Use the global transcript_info map
             list(active_features),
+            frag_hist=frag_hist,
         )
     else:
         length_vector = None
@@ -2264,13 +1766,124 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
 
         return current_total, final_unique, final_multi, t_assignments, d_metrics
 
+    # Compute unique-evidence floors if enabled
+    em_floors = None
+    if getattr(args, "use_unique_floor", False):
+        floor_alpha_base = getattr(args, "unique_floor_alpha", 0.5)
+        territory_alpha = getattr(args, "territory_floor_alpha", None)
+        if territory_alpha is None:
+            territory_alpha = floor_alpha_base
+        junction_alpha = getattr(args, "junction_floor_alpha", None)
+        if junction_alpha is None:
+            junction_alpha = floor_alpha_base
+        floor_min_territory = getattr(args, "unique_floor_min_territory", 50)
+
+        # Junction catchment: region around a splice site where a read can witness it
+        # PE: either mate can span the junction → 2 × (read_length - min_overhang)
+        # SE: only one end → 1 × (read_length - min_overhang)
+        min_overhang = 8
+        read_length = getattr(args, "read_length", None)
+        if read_length is None:
+            # Auto-detect from cache (populated by EqC builder's Rust BAM scan)
+            read_length = (
+                sample_cache_data.get("median_read_length", None)
+                if sample_cache_data
+                else None
+            )
+            if read_length is None:
+                read_length = 150  # fallback default
+            logging.info(
+                f"  [{sample_name}] Read length for junction catchment: {read_length}bp"
+            )
+        is_paired = getattr(args, "paired_end", True)
+        junction_catchment_per = (2 if is_paired else 1) * (read_length - min_overhang)
+
+        # Sum reads in single-transcript EqCs (unique reads per transcript)
+        unique_read_counts = defaultdict(int)
+        for feature_tuple, read_count in unique_mapper_groups.items():
+            if len(feature_tuple) == 1:
+                unique_read_counts[feature_tuple[0]] += read_count
+
+        # Get junction metrics for this sample (unique_junction_reads per transcript)
+        sample_junction_metrics = (
+            sample_cache_data.get("junction_metrics", {}) if sample_cache_data else {}
+        )
+
+        # Compute floors: territory-based, junction-based, take max
+        floor_dict = {}
+        n_territory_floors = 0
+        n_junction_floors = 0
+        n_junction_rescues = 0
+        for tid_int, k in unique_read_counts.items():
+            if tid_int not in _transcript_info:
+                continue
+            info = _transcript_info[tid_int]
+            L_eff = info.get("transcript_length", 0)
+            if L_eff <= 0 or k <= 0:
+                continue
+
+            # --- Territory floor ---
+            territory_floor = 0.0
+            L_u = info.get("unique_territory_bp", 0)
+            if L_u >= floor_min_territory:
+                rate_t = k / L_u
+                implied_t = rate_t * L_eff
+                alpha_t = territory_alpha * min(1.0, (L_u / 500) ** 0.5)
+                territory_floor = alpha_t * implied_t
+                n_territory_floors += 1
+
+            # --- Junction floor ---
+            junction_floor = 0.0
+            jm = sample_junction_metrics.get(tid_int, None)
+            if jm:
+                k_j = jm.get("unique_junction_reads", 0)
+                n_uniq_j = jm.get("n_unique_junctions", 0)
+                if k_j > 0 and n_uniq_j > 0:
+                    catchment_j = n_uniq_j * junction_catchment_per
+                    rate_j = k_j / catchment_j
+                    implied_j = rate_j * L_eff
+                    # More conservative alpha for junctions: larger extrapolation factor
+                    alpha_j = junction_alpha * min(1.0, (catchment_j / 500) ** 0.5)
+                    junction_floor = alpha_j * implied_j
+                    n_junction_floors += 1
+
+            # Take max: strongest unique signal wins
+            final_floor = max(territory_floor, junction_floor)
+            if final_floor > 0:
+                if territory_floor == 0 and junction_floor > 0:
+                    n_junction_rescues += 1
+                floor_dict[tid_int] = final_floor
+
+        if floor_dict:
+            em_floors = pd.Series(0.0, index=active_total_counts.index)
+            for tid_int, floor_val in floor_dict.items():
+                if tid_int in em_floors.index:
+                    em_floors[tid_int] = floor_val
+            alpha_str = (
+                f"territory_alpha={territory_alpha}, junction_alpha={junction_alpha}"
+                if territory_alpha != junction_alpha
+                else f"alpha={floor_alpha_base}"
+            )
+            logging.info(
+                f"  [{sample_name}] Unique-evidence floors: {len(floor_dict)} transcripts "
+                f"({alpha_str}, min_territory={floor_min_territory}bp)"
+            )
+            logging.info(
+                f"  [{sample_name}]   Territory floors: {n_territory_floors}, "
+                f"Junction floors: {n_junction_floors}, "
+                f"Junction rescues (no territory): {n_junction_rescues}"
+            )
+        else:
+            logging.info(
+                f"  [{sample_name}] No unique-evidence floors computed (no qualifying transcripts)"
+            )
+
     # Create pipeline context for EM iterations
     em_pipeline_context = {
         "global_thresholds": global_data["global_thresholds"],
         "gene_map": global_data.get("gene_map"),
         "cached_results": {},
     }
-    # Run EM iterations on active features
     for i in range(args.em_iterations):
         previous_total = active_total_counts.copy()
         if i % 5 == 0:
@@ -2323,6 +1936,10 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
                 active_total_counts.name = sample_name
                 momentum_failures += 1
 
+        # Apply unique-evidence floor: EM cannot drive below what unique reads imply
+        if em_floors is not None:
+            active_total_counts = active_total_counts.clip(lower=em_floors)
+
         theta_history.append(
             active_total_counts.copy()
         )  # FIXED: Use active_total_counts
@@ -2334,28 +1951,33 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
             logging.info(
                 f"[{sample_name}] Momentum stats: {momentum_successes} successes, {momentum_failures} failures"
             )
-
-            (
-                current_total_counts,
-                final_unique_counts,
-                final_multimapper_counts,
-                transcript_assignments,
-                distinguishability_metrics,
-            ) = _finalize_em_results()
             break
         if i == args.em_iterations - 1:
             logging.warning(
                 f"[{sample_name}] Did not converge after {args.em_iterations} iterations."
             )
-
-            (
-                current_total_counts,
-                final_unique_counts,
-                final_multimapper_counts,
-                transcript_assignments,
-                distinguishability_metrics,
-            ) = _finalize_em_results()
             break
+
+    # Log floor inflation (no renormalization — let downstream normalization absorb it)
+    if em_floors is not None:
+        actual_reads = sum(count for _, count in unique_mapper_groups.items()) + sum(
+            count for _, count in multimapper_classes.items()
+        )
+        actual_excess = active_total_counts.values.sum() - actual_reads
+        if actual_excess > 0:
+            logging.info(
+                f"  [{sample_name}] Floor inflation: {actual_excess:.0f} reads "
+                f"({actual_excess/actual_reads*100:.2f}% of total)"
+            )
+
+    # Finalize: expand active arrays to full size
+    (
+        current_total_counts,
+        final_unique_counts,
+        final_multimapper_counts,
+        transcript_assignments,
+        distinguishability_metrics,
+    ) = _finalize_em_results()
 
     if args.output_confidence:
         # Calculate confidence metrics
@@ -2409,7 +2031,7 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
 
 
 def run_joint_em_pipeline_encoded(
-    pipeline_context, args, combined_gtf_path, temp_dir, string_to_int, int_to_string
+    pipeline_context, args, temp_dir, string_to_int, int_to_string
 ):
     """Modified pipeline with integer ID encoding."""
 
@@ -2417,7 +2039,6 @@ def run_joint_em_pipeline_encoded(
     calculate_global_thresholds_and_cache_results_encoded(
         pipeline_context,
         args.bams,
-        combined_gtf_path,
         args,
         temp_dir,
         string_to_int,
@@ -2470,15 +2091,7 @@ def run_joint_em_pipeline_encoded(
         }
 
         pool_args.append(
-            (
-                sample_cache_data,
-                global_data,
-                bam,
-                args,
-                combined_gtf_path,
-                temp_dir,
-                threads_per_worker,
-            )
+            (sample_cache_data, global_data, bam, args, temp_dir, threads_per_worker)
         )
 
     # Process with initialized workers
@@ -2508,7 +2121,7 @@ def run_joint_em_pipeline_encoded(
         "modified_unique_counts",
         "unique_mapper_groups",
         "junction_evidence",
-        "subset_coverage_territory_mapping",
+        "fragment_length_hist",
     ]
     if getattr(args, "light", False):
         cleanup_keys.append("junction_metrics")
@@ -2622,15 +2235,16 @@ def build_argument_parser():
     """Build and return the MAJEC pipeline argument parser."""
     parser = argparse.ArgumentParser(
         description="MAJEC - Momentum-Accelerated Junction-Enhanced Counting\n"
-        "Requires preprocessed annotation file created by precompute_majec_annotations.py",
+        "Requires a preprocessed annotation file created by majec_precompute_annotations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"MAJEC {MAJEC_VERSION}")
 
     # --- Group: Required I/O ---
     io_group = parser.add_argument_group("Required Input/Output")
     io_group.add_argument(
         "--annotation",
-        help="Preprocessed annotation file (.pkl.gz) created by precompute_majec_annotations.py",
+        help="Preprocessed annotation file (.pkl.gz) created by majec_precompute_annotations",
     )
     io_group.add_argument(
         "--bams", nargs="+", help="List of coordinate-sorted input BAM files"
@@ -2693,6 +2307,73 @@ def build_argument_parser():
         metavar=("LOW", "MEDIUM", "HIGH"),
         help="Momentum scaling factors for expression groups (default: 1.5 1.0 0.7)",
     )
+    # Experimental, kept working but hidden from --help (v2 release decision 6):
+    # the unique-evidence floor family and AS-weighted multimapper scoring. Both
+    # are off by default and neither improved accuracy in the v2 benchmarks.
+    em_group.add_argument(
+        "--use_unique_floor", action="store_true", help=argparse.SUPPRESS
+    )  # unique-evidence abundance floor in EM
+    em_group.add_argument(
+        "--unique_floor_alpha", default=0.5, type=float, help=argparse.SUPPRESS
+    )  # base shrinkage factor for the floor
+    em_group.add_argument(
+        "--territory_floor_alpha", default=None, type=float, help=argparse.SUPPRESS
+    )  # override alpha for the territory floor
+    em_group.add_argument(
+        "--junction_floor_alpha", default=None, type=float, help=argparse.SUPPRESS
+    )  # override alpha for the junction floor
+    em_group.add_argument(
+        "--unique_floor_min_territory", default=50, type=int, help=argparse.SUPPRESS
+    )  # minimum unique territory (bp) for the floor
+    em_group.add_argument(
+        "--read_length", default=None, type=int, help=argparse.SUPPRESS
+    )  # floor junction catchment; auto-detected from the BAM
+    em_group.add_argument(
+        "--use_alignment_scoring", action="store_true", help=argparse.SUPPRESS
+    )  # AS-tag softmax weighting of multimapper classes
+    em_group.add_argument(
+        "--as_temperature", default=10.0, type=float, help=argparse.SUPPRESS
+    )  # softmax temperature for AS weighting
+
+    # --- Group: Aligners that omit NH (minimap2 / long reads) ---
+    lr_group = parser.add_argument_group(
+        "No-NH aligners: minimap2 / long reads (experimental)",
+        "MAJEC reads alignment multiplicity from the NH tag, which STAR and HISAT2 "
+        "write and minimap2 does not. When NH is absent, multiplicity is derived "
+        "from read names instead, so multimapping reads reach the EM. Long-read "
+        "quantification is experimental: it has been checked for correctness on ONT "
+        "libraries, but its accuracy against dedicated long-read quantifiers has not "
+        "been established. These options need the compiled majec_core builder; the "
+        "pure-Python builder rejects them rather than ignoring them.",
+    )
+    lr_group.add_argument(
+        "--derive_multiplicity",
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="Derive read multiplicity from read names instead of NH. "
+        "'auto' switches on only if none of the first 10,000 mapped "
+        "records carries NH, so short-read runs are unaffected; "
+        "'on' forces it; 'off' disables it (default: auto)",
+    )
+    lr_group.add_argument(
+        "--lr_score_ratio",
+        default=0.0,
+        type=float,
+        help="Keep only alignments scoring within this fraction of the read's "
+        "best AS (default: 0, keep every reported alignment). Raising it "
+        "assigns each read to whichever locus scores highest, which on "
+        "noisy long reads can move reads between a gene and its pseudogene "
+        "copies",
+    )
+    lr_group.add_argument(
+        "--lr_min_mapq",
+        default=None,
+        type=int,
+        help="MAPQ floor for reads that resolve as unique in derive mode "
+        "(default: 0, off). minimap2 lowers MAPQ when near-equal "
+        "alternatives exist, so a floor removes those reads instead of "
+        "letting the EM resolve them",
+    )
 
     # --- Group: Priors & Evidence Penalties ---
     priors_group = parser.add_argument_group("Evidence Priors & Penalties")
@@ -2739,7 +2420,7 @@ def build_argument_parser():
         "--library_type",
         choices=["dT", "polyA", "random", "none"],
         default="WARNING_UNSPECIFIED",
-        help="Library preparation method (REQUIRED for completeness model)",
+        help="Library preparation method; required with --terminal_relax",
     )
     priors_group.add_argument(
         "--terminal_relax",
@@ -2775,49 +2456,32 @@ def build_argument_parser():
         default=0.1,
         help="Overdispersion for subset penalty variance model (default: 0.1)",
     )
-    priors_group.add_argument(
-        "--use_subset_coverage_data",
-        action="store_true",
-        help="Use read coverage data to inform subset penalties (requires annotation with --generate_rescue_features)",
-    )
-    priors_group.add_argument(
-        "--use_paired_rescue",
-        action="store_true",
-        default=True,
-        help="Use paired junction evidence to rescue low-count junctions (default: True)",
-    )
-    priors_group.add_argument(
-        "--no_paired_rescue",
-        action="store_false",
-        dest="use_paired_rescue",
-        help="Disable paired junction rescue",
-    )
-    priors_group.add_argument(
-        "--paired_rescue_decay",
-        type=float,
-        default=-1.5,
-        help="Exponential decay constant for paired rescue confidence weight (default: -1.5). "
-        "More negative = stricter (only unique pairs help). Less negative = more permissive.",
-    )
 
     # --- Group: Length Scaling & TPM ---
     length_group = parser.add_argument_group("Length Scaling & TPM Calculation")
     length_group.add_argument(
         "--output_tpm",
         action="store_true",
-        help="Calculate and output TPM values in addition to counts.",
+        help="Calculate and output TPM values in addition to counts. Effective "
+        "lengths use the fragment length distribution measured during the "
+        "BAM scan; neither option below is needed for paired-end data.",
     )
     length_group.add_argument(
         "--frag_stats_dir",
         type=str,
         default=None,
-        help="Directory containing JSON fragment length statistics files from get_cDNA_fragment_stats.py.",
+        help="Override: directory of JSON fragment length statistics from "
+        "majec_calc_frag_len (estimated from genomic TLEN), used instead "
+        "of the distribution measured during the scan. Mainly useful for "
+        "reproducing runs made with earlier versions.",
     )
     length_group.add_argument(
         "--mean_fragment_length",
         type=float,
         default=None,
-        help="A single, global mean fragment length to use for all samples.",
+        help="Override: a single global mean fragment length for all samples. "
+        "Useful for single-end data, where fragment lengths cannot be "
+        "measured from the BAM.",
     )
 
     # --- Group: Confidence & Output Settings ---
@@ -2856,10 +2520,9 @@ def build_argument_parser():
     output_group.add_argument(
         "--te_coordinates",
         action="store_true",
-        help="Write per-TE-locus genomic coordinates to "
-        "{prefix}_TE_locus_coordinates.tsv "
-        "(large: one row per TE locus, ~4.7M rows / ~260MB for hg38 rmsk; "
-        "off by default)",
+        help="Write {prefix}_TE_locus_coordinates.tsv mapping each individual TE "
+        "locus to its chr/start/end/strand and subfamily. Off by default "
+        "(this table has one row per TE locus, ~4.7M rows / ~260MB for hg38 rmsk).",
     )
     output_group.add_argument(
         "--light",
@@ -2871,9 +2534,7 @@ def build_argument_parser():
     # --- Group: Caching ---
     cache_group = parser.add_argument_group("Caching")
     cache_group.add_argument(
-        "--use_cache",
-        action="store_true",
-        help="Use cached featureCounts results if available",
+        "--use_cache", action="store_true", help="Use cached EqC results if available"
     )
     cache_group.add_argument(
         "--cache_dir",
@@ -2935,6 +2596,25 @@ def validate_args(args):
         )
         sys.exit(1)
 
+    # The no-NH options are implemented in the Rust core only. Caught here as
+    # well as in the builder because this costs nothing and the alternative is
+    # finding out after the annotation has been parsed.
+    if not RUST_AVAILABLE:
+        lr_asked = []
+        if getattr(args, "derive_multiplicity", "auto") == "on":
+            lr_asked.append("--derive_multiplicity on")
+        if getattr(args, "lr_score_ratio", 0.0):
+            lr_asked.append(f"--lr_score_ratio {args.lr_score_ratio}")
+        if getattr(args, "lr_min_mapq", None):
+            lr_asked.append(f"--lr_min_mapq {args.lr_min_mapq}")
+        if lr_asked:
+            logging.error(
+                f"FATAL: {', '.join(lr_asked)} requires the compiled majec_core "
+                "extension, which is not installed. The pure-Python fallback reads "
+                "multiplicity off the NH tag only."
+            )
+            sys.exit(1)
+
     if args.tsl_penalty_values:
         try:
             args.tsl_penalty_values = json.loads(args.tsl_penalty_values)
@@ -2955,6 +2635,14 @@ def validate_args(args):
         )
         args.calculate_group_confidence = False
 
+    if getattr(args, "analyze_competition", False) and not getattr(
+        args, "output_confidence", False
+    ):
+        logging.warning(
+            "--analyze_competition requires --output_confidence; disabling competition analysis"
+        )
+        args.analyze_competition = False
+
     if getattr(args, "light", False):
         overridden = []
         for flag in [
@@ -2973,15 +2661,23 @@ def validate_args(args):
             "Light mode enabled: skipping prior tracking, confidence metrics, and verbose outputs"
         )
 
-    if args.frag_stats_dir and args.output_tpm:
-        logging.info(
-            f"Using fragment length statistics from directory: {args.frag_stats_dir}"
-        )
-    else:
-        logging.warning(
-            "No fragment length data provided via --frag_stats_dir. "
-            "Falling back to annotated transcript lengths for normalization."
-        )
+    if args.output_tpm:
+        # The EqC builder measures the fragment distribution during its BAM scan,
+        # so --frag_stats_dir is no longer the only source; the per-sample source
+        # actually used is reported by prepare_length_vector.
+        if args.frag_stats_dir:
+            logging.info(
+                f"Using fragment length statistics from directory: {args.frag_stats_dir}"
+            )
+        elif args.mean_fragment_length:
+            logging.info(
+                f"Using fixed fragment length {args.mean_fragment_length} for normalization."
+            )
+        else:
+            logging.info(
+                "Effective lengths will use the fragment distribution measured "
+                "during the BAM scan."
+            )
 
 
 def calculate_tpm(final_counts, sample_length_vectors):
@@ -3005,6 +2701,19 @@ def main():
     logging.info("==================================================")
     logging.info("              MAJEC Pipeline Started              ")
     logging.info("==================================================")
+    logging.info(f" MAJEC version: {MAJEC_VERSION}")
+    eqc_builder_info = builder_provenance()
+    if RUST_AVAILABLE:
+        logging.info(
+            f" EqC builder: Rust majec_core {eqc_builder_info['majec_core_version']} "
+            f"(sha256 {str(eqc_builder_info['majec_core_sha256'])[:16]})"
+        )
+    else:
+        logging.warning(
+            " EqC builder: pure-Python pysam fallback (majec_core not installed). "
+            "Results are the same; the BAM scan is roughly 6x slower. "
+            "Install majec-core for the compiled builder."
+        )
     logging.info(f" Execution command:")
     logging.info(f"  {command_string}")
     logging.info(f"Processing {len(args.bams)} BAM files with {args.threads} threads.")
@@ -3027,9 +2736,10 @@ def main():
             transcript_info,
             transcript_expected_junctions,
             subset_relationships,
-            subset_coverage_territory_mapping,
             splice_competitor_map,
             metadata,
+            exon_index,
+            junction_unstranded,
         ) = load_preprocessed_annotations(args.annotation)
     except Exception as e:
         logging.error(f"Failed to load annotation file: {e}")
@@ -3062,8 +2772,9 @@ def main():
         "transcript_info": transcript_info,  # Includes TSL and transcript lengths
         "transcript_expected_junctions": transcript_expected_junctions,  # Not sure if needed anymore
         "subset_relationships": subset_relationships,  # For competition analysis
-        "subset_coverage_territory_mapping": subset_coverage_territory_mapping,  # For coverage-based subset penalties
         "splice_competitor_map": splice_competitor_map,  # For competition analysis
+        "exon_index": exon_index,
+        "junction_unstranded": junction_unstranded,
         "annotation_metadata": metadata,
     }
 
@@ -3073,43 +2784,15 @@ def main():
         pipeline_context["cache_manager"] = cache_manager
         logging.info(f"Cache manager initialized with directory: {args.cache_dir}")
 
-    if args.use_subset_coverage_data and (
-        not metadata["subset_coverage_features_bed_path"]
-        or not metadata["genome_file_path"]
-    ):
-        logging.error(
-            "--use_subset_coverage_data specified but annotation lacks required coverage feature data"
-        )
-        logging.error(
-            "Please recreate the annotation with --generate_rescue_features or disable this option"
-        )
-        sys.exit(1)
-
     # Run pipeline
     with tempfile.TemporaryDirectory(dir=args.tempdir) as temp_dir:
         logging.info(f"Using temporary directory: {temp_dir}")
 
-        # Get combined GTF path from annotation metadata
-        try:
-            combined_gtf_path = get_combined_gtf_path(metadata, temp_dir)
-        except FileNotFoundError as e:
-            logging.error(str(e))
-            logging.error(
-                "The GTF files referenced in the annotation are not found at their original paths"
-            )
-            logging.error(
-                "Please ensure the GTF files are accessible or recreate the annotation"
-            )
-            sys.exit(1)
-
-        # Run optimized pipeline with integer IDs
+        # Run optimized pipeline with integer IDs. The GTFs named in the
+        # annotation are not needed here: everything quantification uses is in
+        # the precomputed pickle (only the fallback for old v1 pickles re-reads them).
         results = run_joint_em_pipeline_encoded(
-            pipeline_context,
-            args,
-            combined_gtf_path,
-            temp_dir,
-            string_to_int,
-            int_to_string,
+            pipeline_context, args, temp_dir, string_to_int, int_to_string
         )
 
         if results[0] is None:
@@ -3127,6 +2810,9 @@ def main():
             sample_length_vectors,
         ) = results
 
+        run_file_map = (
+            {}
+        )  # per-sample output files; filled in when confidence outputs are written
         # Save enhanced confidence metrics
         if args.output_confidence or pipeline_context["junction_map"]:
             logging.info("Saving comprehensive confidence metrics in parallel...")
@@ -3260,9 +2946,10 @@ def main():
         gene_map = pipeline_context["gene_map"]
         te_map = pipeline_context["te_map"]
 
+        # Emit genomic coordinates for each individual TE locus (opt-in; ~4.7M rows for hg38 rmsk)
         if te_map is not None and args.te_coordinates:
             write_te_locus_coordinates(
-                pipeline_context["transcript_info"],
+                pipeline_context.get("transcript_info"),
                 int_to_string,
                 te_map,
                 args.prefix,
@@ -3320,48 +3007,46 @@ def main():
                 "Could not perform final aggregation due to GTF parsing errors."
             )
 
-    # Write the COMPLETE run manifest file
-    if (
-        "cache_path_manifest" in pipeline_context
-        and pipeline_context["cache_path_manifest"]
-    ):
-        manifest_path = f"{args.prefix}_run_manifest.json"
-        manifest_data = {
-            "run_prefix": args.prefix,
-            "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "annotation_file": os.path.abspath(args.annotation),
-            "cache_files": pipeline_context["cache_path_manifest"],
-            "summary_files": {
-                "transcript_counts": os.path.abspath(
-                    f"{args.prefix}_total_EM_counts.tsv"
-                ),
-                "transcript_tpm": os.path.abspath(f"{args.prefix}_total_EM_TPM.tsv"),
-                "aggregated_counts": os.path.abspath(
-                    f"{args.prefix}_total_EM_aggregated_counts.tsv"
-                ),
-                "aggregated_tpm": os.path.abspath(
-                    f"{args.prefix}_total_EM_aggregated_TPM.tsv"
-                ),
-                "group_confidence": os.path.abspath(
-                    f"{args.prefix}_group_confidence_comprehensive.tsv.gz"
-                ),
-            },
-            "per_sample_files": run_file_map,
-        }
-        if args.te_coordinates:
-            manifest_data["summary_files"]["te_locus_coordinates"] = os.path.abspath(
-                f"{args.prefix}_TE_locus_coordinates.tsv"
+    # Write the run manifest on every run. It records the version and the EqC
+    # builder (provenance) as well as the files majec_build_db ingests. Without
+    # caching, cache_files is empty and majec_build_db skips the junction tables.
+    manifest_path = f"{args.prefix}_run_manifest.json"
+    manifest_data = {
+        "run_prefix": args.prefix,
+        "majec_version": MAJEC_VERSION,
+        "eqc_builder": eqc_builder_info,
+        "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "annotation_file": os.path.abspath(args.annotation),
+        "cache_files": pipeline_context.get("cache_path_manifest") or {},
+        "summary_files": {
+            "transcript_counts": os.path.abspath(f"{args.prefix}_total_EM_counts.tsv"),
+            "transcript_tpm": os.path.abspath(f"{args.prefix}_total_EM_TPM.tsv"),
+            "aggregated_counts": os.path.abspath(
+                f"{args.prefix}_total_EM_aggregated_counts.tsv"
+            ),
+            "aggregated_tpm": os.path.abspath(
+                f"{args.prefix}_total_EM_aggregated_TPM.tsv"
+            ),
+            "group_confidence": os.path.abspath(
+                f"{args.prefix}_group_confidence_comprehensive.tsv.gz"
+            ),
+        },
+        "per_sample_files": run_file_map,
+    }
+    if args.te_coordinates:
+        manifest_data["summary_files"]["te_locus_coordinates"] = os.path.abspath(
+            f"{args.prefix}_TE_locus_coordinates.tsv"
+        )
+    # Add error handling in case some files weren't generated
+    for key, path in manifest_data["summary_files"].items():
+        if not os.path.exists(path):
+            logging.warning(
+                f"Manifest warning: summary file for '{key}' not found at '{path}'."
             )
-        # Add error handling in case some files weren't generated
-        for key, path in manifest_data["summary_files"].items():
-            if not os.path.exists(path):
-                logging.warning(
-                    f"Manifest warning: summary file for '{key}' not found at '{path}'."
-                )
 
-        with open(manifest_path, "w") as f:
-            json.dump(manifest_data, f, indent=4)  # Use indent=4 for better readability
-        logging.info(f"✅ Saved COMPLETE run manifest to: {manifest_path}")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_data, f, indent=4)  # Use indent=4 for better readability
+    logging.info(f"✅ Saved COMPLETE run manifest to: {manifest_path}")
 
     elapsed_time = time.time() - start_time
     logging.info(f"\n=== PIPELINE COMPLETED IN {elapsed_time/60:.1f} minutes ===")

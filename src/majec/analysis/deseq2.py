@@ -189,7 +189,9 @@ def fetch_count_matrix(db_conn, sample_ids_int, level="gene"):
             .drop(columns=[feature_col, map_info["int"]])
             .set_index(map_info["str"])
         )
-    return count_matrix.astype(int)
+    # Round the fractional EM estimates to the nearest integer for DESeq2
+    # (truncating would drop 0.5 on average and zero every value below 1).
+    return count_matrix.round().astype(int)
 
 
 def fetch_confidence_metrics(
@@ -641,12 +643,12 @@ def generate_deseq2_script_with_options(
     coldata_subset <- coldata[coldata${col_name} != "other", ]
     cts_subset <- cts[, rownames(coldata_subset)]
     coldata_subset${col_name} <- factor(coldata_subset${col_name}, levels=c("control", "case"))
-    """
-
+"""
         if batch_column:
+            # Ensure the batch column is treated as a factor (after coldata_subset exists)
             r_script += f"""
     coldata_subset${batch_column} <- as.factor(coldata_subset${batch_column})
-    """
+"""
 
         r_script += f"""
     # Standard DESeq2
@@ -714,6 +716,8 @@ def generate_deseq2_script_with_options(
         dds <- nbinomWaldTest(dds)
     }}
     # --- END SAFETY CHECK ---
+
+    resLFC <- lfcShrink(dds, coef="{col_name}_case_vs_control", type="apeglm")
     """
         else:
             r_script += f"""
@@ -745,7 +749,18 @@ def generate_deseq2_script_with_options(
         
         dominated_indices <- which(resLFC$padj < 0.05 & resLFC$MAJEC_gini > 0.90)
         for (i in dominated_indices) {{ all_flags[[i]] <- c(all_flags[[i]], "DOMINATED_BY_ONE_ISOFORM") }}
-        
+
+        # The flags above all gate on padj<0.05, so they caveat hits only. A gene whose reads
+        # cannot be assigned unambiguously will instead report a near-zero LFC at a high padj
+        # and read as a confident "no change" -- with nothing to distinguish it from a real
+        # null. Flag that case separately. Gated on inter-gene competition only: strong
+        # evidence fraction is low for structural reasons in ~25% of genes (MALAT1, EEF1A1,
+        # rRNA) and is far too broad to gate a null on.
+        ambiguous_null_indices <- which((is.na(resLFC$padj) | resLFC$padj >= 0.05) &
+                                        resLFC$MAJEC_inter_gene_competition < 0.3 &
+                                        resLFC$baseMean > 50)
+        for (i in ambiguous_null_indices) {{ all_flags[[i]] <- c(all_flags[[i]], "AMBIGUOUS_NULL") }}
+
         resLFC$MAJEC_flags <- sapply(all_flags, function(x) {{
         if (is.null(x)) {{
             return("PASS")
@@ -930,6 +945,7 @@ def main():
     )
     parser.add_argument(
         "--variance_base",
+        type=float,
         help="A constant to determine how big an effect confidence has on the adjusted variance used in DESeq2\n"
         "Higher values increase implied variance for low confidence features. The param value is the maximum variance multiplier. Deafult = 5",
         default=5,

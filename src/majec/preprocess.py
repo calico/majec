@@ -17,17 +17,6 @@ from collections import defaultdict
 from datetime import datetime
 import numpy as np
 import pandas as pd
-from concurrent.futures import ProcessPoolExecutor
-
-try:
-    from intervaltree import Interval, IntervalTree
-
-    intervaltree_loaded = True
-except ImportError as e:
-    logging.error(
-        f"Failed to import 'intervaltree'. Can not generate_rescue_features . Error: {e}"
-    )
-    intervaltree_loaded = False
 
 
 def setup_logging():
@@ -46,53 +35,6 @@ def calculate_gtf_checksum(gtf_path):
         for chunk in iter(lambda: f.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
-
-
-def get_chrom_order_from_file(file_path):
-    """
-    Reads a genome file and performs validation checks.
-    """
-    try:
-        chrom_order = []
-        with open(file_path, "r") as f:
-            for i, line in enumerate(f):
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue  # Skip empty lines and comments
-
-                parts = line.split("\t")
-
-                # --- The New Scrutiny ---
-                if len(parts) < 1:
-                    logging.warning(
-                        f"Skipping malformed line {i+1} in {file_path}: line is empty."
-                    )
-                    continue
-
-                chrom_name = parts[0]
-
-                # Check for weird characters or spaces
-                if " " in chrom_name or "\t" in chrom_name:
-                    logging.warning(
-                        f"Chromosome name '{chrom_name}' on line {i+1} contains whitespace. This may cause issues."
-                    )
-
-                chrom_order.append(chrom_name)
-
-        if not chrom_order:
-            raise ValueError("File is empty or contains no valid chromosome names.")
-
-        logging.info(
-            f"Successfully loaded and validated {len(chrom_order)} chromosomes from {os.path.basename(file_path)}."
-        )
-        return chrom_order
-
-    except FileNotFoundError:
-        logging.error(f"FATAL: Chromosome sort order file not found at: {file_path}")
-        raise
-    except Exception as e:
-        logging.error(f"FATAL: Failed to parse chromosome order file: {e}")
-        raise
 
 
 def parse_complete_gtf(gtf_path, feature_type="gene"):
@@ -159,6 +101,8 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
                 if transcript_id not in transcript_info:
                     transcript_info[transcript_id] = {
                         "gene_id": gene_id,
+                        "family_id": family_id,
+                        "class_id": class_id,
                         "chr": chrom,
                         "strand": strand,
                         "exons": [],
@@ -166,8 +110,6 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
                         "end": 0,
                         "feature_type": feature_type,
                         "tsl": tsl,
-                        "family_id": family_id,
-                        "class_id": class_id,
                     }
                 else:
                     # Update TSL if we found it
@@ -177,6 +119,8 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
             if transcript_id not in transcript_info:
                 transcript_info[transcript_id] = {
                     "gene_id": gene_id,
+                    "family_id": family_id,
+                    "class_id": class_id,
                     "chr": chrom,
                     "strand": strand,
                     "exons": [],
@@ -184,8 +128,6 @@ def parse_complete_gtf(gtf_path, feature_type="gene"):
                     "end": 0,
                     "feature_type": feature_type,
                     "tsl": "NA",  # Default if no TSL found
-                    "family_id": family_id,
-                    "class_id": class_id,
                 }
 
             # Update bounds and collect exons
@@ -284,6 +226,75 @@ def compute_junction_data(transcript_to_exons, string_to_int):
     logging.info(f"  Found {len(junction_map)} junctions ({unique_count} unique)")
 
     return junction_map, dict(transcript_unique_junctions)
+
+
+def compute_unique_territory(transcript_info):
+    """
+    Compute genome-wide unique exonic territory per transcript using an event-based
+    sweep line algorithm. A base is "unique" to a transcript if no other transcript
+    in the annotation has an exon covering that base (strand-aware).
+
+    Args:
+        transcript_info: {transcript_id: {chr, strand, exons: [(start, end), ...], ...}}
+            Exon coordinates are 1-based inclusive (GTF convention).
+
+    Returns:
+        {transcript_id: unique_bp_count}
+    """
+    logging.info("Computing unique exonic territory per transcript...")
+
+    # Group exon intervals by (chrom, strand)
+    groups = defaultdict(list)
+    for tid, info in transcript_info.items():
+        key = (info["chr"], info["strand"])
+        for start, end in info["exons"]:
+            # Convert to half-open [start, end+1) for sweep
+            groups[key].append((start, end + 1, tid))
+
+    unique_bp = defaultdict(int)
+
+    for (chrom, strand), intervals in groups.items():
+        # Build events: (position, event_type, transcript_id)
+        # event_type: 0 = start (exon begins), 1 = end (exon ends)
+        events = []
+        for start, end, tid in intervals:
+            events.append((start, 0, tid))
+            events.append((end, 1, tid))
+        events.sort()
+
+        # Sweep: track active transcripts at each position
+        active = defaultdict(int)  # tid -> count of overlapping exons
+        n_active = 0  # number of distinct active transcripts
+        prev_pos = None
+
+        for pos, event_type, tid in events:
+            # Count bases since last event
+            if prev_pos is not None and pos > prev_pos:
+                if n_active == 1:
+                    sole_tid = next(iter(active))
+                    unique_bp[sole_tid] += pos - prev_pos
+
+            # Process event
+            if event_type == 0:  # exon start
+                if active[tid] == 0:
+                    n_active += 1
+                active[tid] += 1
+            else:  # exon end
+                active[tid] -= 1
+                if active[tid] == 0:
+                    del active[tid]
+                    n_active -= 1
+
+            prev_pos = pos
+
+    n_with_unique = sum(1 for v in unique_bp.values() if v > 0)
+    total_unique_bp = sum(unique_bp.values())
+    logging.info(
+        f"  {n_with_unique:,} / {len(transcript_info):,} transcripts have unique territory"
+    )
+    logging.info(f"  Total unique territory: {total_unique_bp:,} bp")
+
+    return dict(unique_bp)
 
 
 def create_annotation_maps(gene_transcript_info, te_transcript_info, string_to_int):
@@ -663,572 +674,7 @@ def init_worker(subset_rels, t_to_exons, i_to_s, min_size):
     _worker_data["min_unique_size"] = min_size
 
 
-def characterize_unique_exonic_territory_parallel(
-    subset_relationships,
-    transcript_to_exons,
-    int_to_string,
-    min_unique_size=30,
-    num_workers=8,
-):
-    """
-    Manager function that chunks the data and runs the characterization in parallel.
-    """
-    logging.info(
-        f"Characterizing {len(subset_relationships)} subsets in parallel with {num_workers} workers..."
-    )
-
-    # --- Chunk the subset IDs into smaller lists ---
-    subset_ids = list(subset_relationships.keys())
-    # Create more chunks than workers for better load balancing, especially if some genes are complex.
-    num_chunks = num_workers * 4
-    chunks_of_ids = np.array_split(subset_ids, num_chunks)
-
-    final_map = {}
-    with ProcessPoolExecutor(
-        max_workers=num_workers,
-        initializer=init_worker,
-        initargs=(
-            subset_relationships,
-            transcript_to_exons,
-            int_to_string,
-            min_unique_size,
-        ),
-    ) as executor:
-
-        # Map the worker function to the chunks of IDs
-        results = executor.map(_worker_characterize_chunk, chunks_of_ids)
-
-        # Combine the results from all the chunks
-        for chunk_result in results:
-            final_map.update(chunk_result)
-
-    # --- Final Logging (copied from your original function) ---
-    logging.info(
-        f"  Found unique territories for {len(final_map)}/{len(subset_relationships)} subsets"
-    )
-    event_counts = defaultdict(int)
-    for territories in final_map.values():
-        for territory in territories:
-            event_counts[territory["type"]] += 1
-    for event_type, count in event_counts.items():
-        logging.info(f"    {event_type}: {count} events")
-
-    return final_map
-
-
-def _worker_characterize_chunk(subset_chunk):
-    """
-    Worker function that takes a CHUNK of subset_relationships and processes it.
-    It uses the global _worker_data initialized for the process.
-    This function's logic is a direct copy of the original, working version.
-    """
-    # Unpack the large, read-only data structures from the global scope
-    subset_relationships = _worker_data[
-        "subset_relationships"
-    ]  # The full map is needed for context
-    transcript_to_exons = _worker_data["transcript_to_exons"]
-    int_to_string = _worker_data["int_to_string"]
-    min_unique_size = _worker_data["min_unique_size"]
-
-    # Import necessary libraries within the worker
-    from intervaltree import IntervalTree, Interval
-    from collections import defaultdict
-
-    # This is the dictionary for the results from THIS specific chunk
-    chunk_map = {}
-
-    # Now, the original function's main loop runs here, on the smaller subset_chunk
-    # subset_chunk is just a list of subset_ids to process
-    for subset_id in subset_chunk:
-        details = subset_relationships[subset_id]
-
-        subset_tid_str = int_to_string[subset_id]
-        subset_exons = transcript_to_exons.get(subset_tid_str, [])
-
-        if not subset_exons:
-            continue
-
-        # Sort subset exons by position
-        subset_exons_sorted = sorted(subset_exons, key=lambda x: x["start"])
-        chr_name = subset_exons_sorted[0]["chr"]
-
-        unique_territories = []
-
-        for superset_id in details["supersets"]:
-            superset_tid_str = int_to_string[superset_id]
-            superset_exons = transcript_to_exons.get(superset_tid_str, [])
-
-            if not superset_exons:
-                continue
-
-            # Sort superset exons by position
-            superset_exons_sorted = sorted(superset_exons, key=lambda x: x["start"])
-
-            subset_tree = IntervalTree()
-            for exon in subset_exons_sorted:
-                if exon["start"] != exon["end"]:
-                    subset_tree.add(Interval(exon["start"], exon["end"], exon))
-            subset_tree.merge_overlaps()
-
-            superset_tree = IntervalTree()
-            for exon in superset_exons_sorted:
-                if exon["start"] != exon["end"]:
-                    superset_tree.add(Interval(exon["start"], exon["end"], exon))
-            superset_tree.merge_overlaps()
-
-            # === CASE 1: Alternative Low-Coordinate Terminus (Optimized) ===
-            subset_first_exon = subset_exons_sorted[0]
-            overlapping_intervals = superset_tree.overlap(
-                subset_first_exon["start"], subset_first_exon["end"]
-            )
-
-            if overlapping_intervals:
-                superset_comparator_interval = min(
-                    overlapping_intervals, key=lambda iv: iv.begin
-                )
-                superset_comparator = superset_comparator_interval.data
-
-                if subset_first_exon["start"] < superset_comparator["start"]:
-                    unique_region_size = (
-                        superset_comparator["start"] - subset_first_exon["start"]
-                    )
-                    if unique_region_size >= min_unique_size:
-                        unique_territories.append(
-                            {
-                                "type": "alt_low_coord_terminus",
-                                "unique_coords": f"{chr_name}:{subset_first_exon['start']}-{superset_comparator['start']}",
-                                "comparator_coords": f"{chr_name}:{superset_comparator['start']}-{superset_comparator['end']}",
-                                "size": unique_region_size,
-                                "superset_id": superset_id,
-                                "description": "Subset extends beyond superset at low-coordinate end",
-                            }
-                        )
-
-            # === CASE 2: Alternative High-Coordinate Terminus (Optimized) ===
-            subset_last_exon = subset_exons_sorted[-1]
-            overlapping_intervals = superset_tree.overlap(
-                subset_last_exon["start"], subset_last_exon["end"]
-            )
-
-            if overlapping_intervals:
-                superset_comparator_interval = max(
-                    overlapping_intervals, key=lambda iv: iv.end
-                )
-                superset_comparator = superset_comparator_interval.data
-
-                if subset_last_exon["end"] > superset_comparator["end"]:
-                    unique_region_size = (
-                        subset_last_exon["end"] - superset_comparator["end"]
-                    )
-                    if unique_region_size >= min_unique_size:
-                        unique_territories.append(
-                            {
-                                "type": "alt_high_coord_terminus",
-                                "unique_coords": f"{chr_name}:{superset_comparator['end']}-{subset_last_exon['end']}",
-                                "comparator_coords": f"{chr_name}:{superset_comparator['start']}-{superset_comparator['end']}",
-                                "size": unique_region_size,
-                                "superset_id": superset_id,
-                                "description": "Subset extends beyond superset at high-coordinate end",
-                            }
-                        )
-
-            # === CASE 3: Internal differences (retained introns) ===
-            subset_unique = IntervalTree(subset_tree)
-            for interval in superset_tree:
-                subset_unique.chop(interval.begin, interval.end)
-
-            for interval in subset_unique:
-                if (
-                    interval.begin > subset_exons_sorted[0]["start"] + 100
-                    and interval.end < subset_exons_sorted[-1]["end"] - 100
-                ):
-
-                    upstream_exon, downstream_exon = None, None
-                    for sup_exon in superset_exons_sorted:
-                        if sup_exon["end"] <= interval.begin:
-                            if (
-                                not upstream_exon
-                                or sup_exon["end"] > upstream_exon["end"]
-                            ):
-                                upstream_exon = sup_exon
-                        elif sup_exon["start"] >= interval.end:
-                            if (
-                                not downstream_exon
-                                or sup_exon["start"] < downstream_exon["start"]
-                            ):
-                                downstream_exon = sup_exon
-
-                    if (
-                        upstream_exon
-                        and downstream_exon
-                        and interval.length() >= min_unique_size
-                    ):
-                        comparator_coords = [
-                            f"{chr_name}:{upstream_exon['start']}-{upstream_exon['end']}",
-                            f"{chr_name}:{downstream_exon['start']}-{downstream_exon['end']}",
-                        ]
-                        unique_territories.append(
-                            {
-                                "type": "retained_intron",
-                                "unique_coords": f"{chr_name}:{interval.begin}-{interval.end}",
-                                "comparator_coords": comparator_coords,
-                                "size": interval.length(),
-                                "superset_id": superset_id,
-                                "description": "Intron retained in subset, spliced in superset",
-                            }
-                        )
-
-        if unique_territories:
-            chunk_map[subset_id] = unique_territories
-
-    return chunk_map
-
-
-def build_interval_trees(transcript_to_exons, string_to_int):
-    """
-    Builds a dictionary of interval trees for all exons in the annotation.
-
-    Args:
-        transcript_to_exons (dict): The ground-truth exon data {str_tid: [{'chr':c, 'start':s, 'end':e, 'strand':str}]}.
-        string_to_int (dict): Mapping from string IDs to integer IDs.
-
-    Returns:
-        dict: A nested dictionary of interval trees, keyed by {chrom: {strand: IntervalTree}}.
-    """
-    logging.info("Building interval trees for all exons...")
-    # The structure is: { 'chr1': {'+': IntervalTree, '-': IntervalTree}, 'chr2': ... }
-    trees = defaultdict(lambda: defaultdict(IntervalTree))
-
-    # Iterate through the original, string-keyed exon dictionary
-    for transcript_id_str, exons in transcript_to_exons.items():
-        if not exons:
-            continue
-
-        # Get the integer ID for this transcript to use as the data payload
-        transcript_id_int = string_to_int.get(transcript_id_str)
-        if transcript_id_int is None:
-            # Not sure how this would happpen but sadtey check in case
-            continue
-
-        # Use the first exon to get chrom and strand, assuming they are consistent for the transcript.
-        chrom = exons[0]["chr"]
-        strand = exons[0]["strand"]
-        # print(chrom, strand)
-        for exon in exons:
-            if (
-                exon["start"] != exon["end"]
-            ):  # safty check for zero-length exons could potentially filter GTF vecotwise earlier
-                # Create an Interval object for each exon.
-                # The interval is [start, end). The library handles the half-open interval correctly.
-                # The data payload is the integer transcript ID.
-                trees[chrom][strand].add(
-                    Interval(exon["start"], exon["end"], transcript_id_int)
-                )
-
-    logging.info(
-        f"Successfully built and merged interval trees for {len(trees)} chromosomes."
-    )
-    return trees
-
-
-def find_unambiguous_territory(candidate_map, interval_trees, transcript_info):
-    """
-    Takes a map of candidate unique regions and filters it by checking for
-    any overlaps with other transcripts. This is the definitive "daylight" check.
-
-    Args:
-        candidate_map (dict): The map of {subset_id: [events]} from the characterization step.
-        interval_trees (dict): The pre-built, un-merged interval trees for all exons.
-        transcript_info (dict): Metadata for all transcripts {int_tid: info}.
-
-    Returns:
-        dict: A new, filtered map containing only events with truly unique territory.
-    """
-    logging.info(
-        f"Searching for unambiguous 'daylight' in {len(candidate_map)} candidate subsets..."
-    )
-    final_rescue_map = defaultdict(list)
-
-    # Iterate through each subset that had a potential unique region
-    for subset_id, events in candidate_map.items():
-
-        # This list will store the validated events for this subset
-        validated_events = []
-
-        for event in events:
-            try:
-                # --- Step 1: Get all necessary data for the event ---
-                # This is the code that replaces the placeholder comment.
-                coords_str = event["unique_coords"]
-                chrom, coords = coords_str.split(":")
-                start, end = map(int, coords.split("-"))
-
-                # The strand is determined by the subset transcript itself
-                strand = transcript_info[subset_id].get("strand", "+")
-
-                # --- Step 2: Query the global tree for ALL overlaps in the candidate region ---
-                overlapping_intervals = interval_trees[chrom][strand].overlap(
-                    start, end
-                )
-
-                # --- Step 3: Keep everything that is NOT the subset itself. ---
-                other_overlaps = {
-                    iv for iv in overlapping_intervals if iv.data != subset_id
-                }
-
-                # --- Step 4: Perform the "Daylight Chop" ---
-                # We start with our candidate region as a tree.
-                daylight_tree = IntervalTree([Interval(start, end)])
-
-                # Now, subtract every single other overlapping exon from it.
-                for overlap in other_overlaps:
-                    daylight_tree.chop(overlap.begin, overlap.end)
-
-                # --- Step 5: The Final Decision ---
-                # If there is any interval left in our tree, we have found daylight!
-                if daylight_tree:
-                    # Find the largest remaining chunk of daylight.
-                    largest_daylight_interval = max(
-                        daylight_tree, key=lambda i: i.length()
-                    )
-
-                    # We create a new, validated event with the precise coordinates of the daylight.
-                    updated_event = event.copy()
-                    updated_event["unique_coords"] = (
-                        f"{chrom}:{largest_daylight_interval.begin}-{largest_daylight_interval.end}"
-                    )
-                    updated_event["size"] = (
-                        largest_daylight_interval.length()
-                    )  # Update the size
-
-                    validated_events.append(updated_event)
-
-            except Exception as e:
-                # This robustly handles any unexpected errors for a single event.
-                logging.warning(
-                    f"Could not process event for subset {subset_id} ({event.get('unique_coords', 'N/A')}): {e}"
-                )
-                continue
-
-        # After checking all events for a subset, if any were validated, add them to the final map.
-        if validated_events:
-            final_rescue_map[subset_id].extend(validated_events)
-
-    logging.info(
-        f"Found {len(final_rescue_map)} subsets with validated, unambiguous territory."
-    )
-    return dict(final_rescue_map)
-
-
-def write_territories_to_bed_with_mapping(
-    final_rescue_map,
-    transcript_info,
-    output_bed_path,
-    chrom_order,
-    output_mapping_path=None,
-):
-    """
-    Convert territories to deduplicated BED format with integer IDs and relational mapping.
-
-    Returns:
-        territory_mapping: Dict with all relationships for interpreting coverage data
-    """
-    INTRON_BOUNDARY_TRIM = 3
-    TERMINAL_TRIM = 1
-
-    logging.info(f"Generating deduplicated BED file and territory mapping...")
-
-    if chrom_order is None or len(chrom_order) == 0:
-        logging.warning(
-            "Could not determine chromosome order from GTF header. Falling back to simple sort."
-        )
-        # Fallback: get all chromosomes from the data and sort them simply
-        all_chroms = {info["chr"] for info in transcript_info.values()}
-        chrom_order = sorted(list(all_chroms))
-
-    chrom_rank_map = {chrom: i for i, chrom in enumerate(chrom_order)}
-
-    # Step 1: Collect all unique regions (fully deduplicated)
-    unique_regions = {}  # {(chr, start, end, strand): region_id}
-    region_counter = 0
-
-    # Step 2: Build the relational mapping
-    territory_mapping = {
-        "regions": {},  # region_id -> {chr, start, end, strand, length}
-        "subset_territories": defaultdict(
-            lambda: {"unique": [], "comparator": []}
-        ),  # subset_id -> {unique: [region_ids], comparator: [region_ids]}
-        "relationships": [],  # List of {subset_id, superset_id, unique_regions, comparator_regions}
-    }
-
-    # Process all territories to find unique regions
-    for subset_id, events in final_rescue_map.items():
-        subset_info = transcript_info.get(subset_id)
-        if not subset_info:
-            continue
-
-        strand = subset_info.get("strand", ".")
-
-        for event in events:
-            # Process unique region
-            try:
-                coords_str = event["unique_coords"]
-                chrom, coords = coords_str.split(":")
-                start, end = coords.split("-")
-                start, end = int(start), int(end)
-                if event["type"] == "retained_intron":
-                    start = start + INTRON_BOUNDARY_TRIM
-                    end = end - INTRON_BOUNDARY_TRIM
-                else:
-                    start = start + TERMINAL_TRIM
-                    end = end - TERMINAL_TRIM
-                if end - start < 10:
-                    continue
-
-                region_key = (chrom, start, end, strand)
-
-                # Add to unique regions if not seen
-                if region_key not in unique_regions:
-                    unique_regions[region_key] = region_counter
-                    territory_mapping["regions"][region_counter] = {
-                        "chr": chrom,
-                        "start": start,
-                        "end": end,
-                        "strand": strand,
-                        "length": end - start,
-                        "type": "unique",
-                    }
-                    region_counter += 1
-
-                # Add to subset's unique territories
-                region_id = unique_regions[region_key]
-                if (
-                    region_id
-                    not in territory_mapping["subset_territories"][subset_id]["unique"]
-                ):
-                    territory_mapping["subset_territories"][subset_id]["unique"].append(
-                        region_id
-                    )
-
-            except (ValueError, KeyError) as e:
-                logging.warning(f"Skipping malformed unique region: {e}")
-
-            # Process comparator regions
-            comparator_list = event.get("comparator_coords", [])
-            if isinstance(comparator_list, str):
-                comparator_list = [comparator_list]
-
-            comparator_region_ids = []
-            for coords_str in comparator_list:
-                try:
-                    chrom, coords = coords_str.split(":")
-                    start, end = coords.split("-")
-                    start, end = int(start), int(end)
-
-                    region_key = (chrom, start, end, strand)
-
-                    # Add to unique regions if not seen
-                    if region_key not in unique_regions:
-                        unique_regions[region_key] = region_counter
-                        territory_mapping["regions"][region_counter] = {
-                            "chr": chrom,
-                            "start": start,
-                            "end": end,
-                            "strand": strand,
-                            "length": end - start,
-                            "type": "comparator",
-                        }
-                        region_counter += 1
-
-                    region_id = unique_regions[region_key]
-                    if (
-                        region_id
-                        not in territory_mapping["subset_territories"][subset_id][
-                            "comparator"
-                        ]
-                    ):
-                        territory_mapping["subset_territories"][subset_id][
-                            "comparator"
-                        ].append(region_id)
-                    comparator_region_ids.append(region_id)
-
-                except (ValueError, KeyError) as e:
-                    logging.warning(f"Skipping malformed comparator region: {e}")
-
-            # Add relationship record
-            if "superset_id" in event:
-                # Need to look up the unique region ID correctly
-                unique_coords_str = event["unique_coords"]
-                unique_chrom, unique_coords = unique_coords_str.split(":")
-                unique_start, unique_end = unique_coords.split("-")
-                unique_start, unique_end = int(unique_start), int(unique_end)
-
-                unique_region_key = (unique_chrom, unique_start, unique_end, strand)
-                unique_region_id = unique_regions.get(unique_region_key)
-
-                territory_mapping["relationships"].append(
-                    {
-                        "subset_id": subset_id,
-                        "superset_id": event["superset_id"],
-                        "event_type": event.get("type", "unknown"),
-                        "unique_region": unique_region_id,
-                        "comparator_regions": comparator_region_ids,
-                    }
-                )
-
-    # Step 3: Write BED file
-    bed_lines = []
-
-    def genome_sort_key(item):
-        region_key = item[0]  # The tuple (chrom, start, end, strand)
-        chrom = region_key[0]
-        start_pos = region_key[1]
-
-        # Use the rank from our learned map. Default to a high number for unknown contigs.
-        rank = chrom_rank_map.get(chrom, float("inf"))
-
-        return (rank, start_pos)
-
-    sorted_regions = sorted(unique_regions.items(), key=genome_sort_key)
-
-    for (chrom, start, end, strand), region_id in sorted_regions:
-        bed_line = f"{chrom}\t{start}\t{end}\tREGION_{region_id}\t0\t{strand}"
-        bed_lines.append(bed_line)
-
-    with open(output_bed_path, "w") as f:
-        f.write("\n".join(bed_lines) + "\n")
-
-    logging.info(f"  Wrote {len(bed_lines)} unique regions to GENOME-SORTED BED file")
-    with open(output_bed_path, "w") as f:
-        for line in bed_lines:
-            f.write(line + "\n")
-
-    logging.info(f"  Wrote {len(bed_lines)} unique regions to BED file")
-
-    # Convert defaultdicts to regular dicts for JSON serialization
-    territory_mapping["subset_territories"] = dict(
-        territory_mapping["subset_territories"]
-    )
-
-    # Step 4: Save mapping if requested
-    if output_mapping_path:
-        with open(output_mapping_path, "w") as f:
-            json.dump(territory_mapping, f, indent=2)
-        logging.info(f"  Saved territory mapping to {output_mapping_path}")
-
-    # Add summary statistics
-    territory_mapping["stats"] = {
-        "total_regions": len(unique_regions),
-        "total_subsets": len(territory_mapping["subset_territories"]),
-        "total_relationships": len(territory_mapping["relationships"]),
-    }
-
-    return territory_mapping
-
-
-def build_comprehensive_annotation(
-    gene_gtf, te_gtf, output_prefix, rescue_data=True, genome_file_path=None
-):
+def build_comprehensive_annotation(gene_gtf, te_gtf, output_prefix):
     """Build complete annotation data structure with TSL and expected junctions."""
 
     # Parse GTFs (now includes TSL)
@@ -1251,48 +697,6 @@ def build_comprehensive_annotation(
     te_ids = set(te_transcript_info.keys())
     duplicates = gene_ids.intersection(te_ids)
 
-    if rescue_data:
-        # Validate genomefile contains all GTF chroms
-        all_gtf_chroms = set(gene_chroms).union(set(te_chroms))
-        chrom_order = get_chrom_order_from_file(genome_file_path)
-        authoritative_chrom_set = set(chrom_order)
-        chroms_in_gtf_but_not_genome = all_gtf_chroms.difference(
-            authoritative_chrom_set
-        )
-        if chroms_in_gtf_but_not_genome:
-            # If the difference set is not empty, we have a mismatch.
-            logging.warning("=" * 80)
-            logging.warning("WARNING: Chromosome Mismatch Detected!")
-            logging.warning(
-                f"The following {len(chroms_in_gtf_but_not_genome)} chromosome(s) were found in your GTF file(s) but are NOT present"
-            )
-            logging.warning(
-                f"in your authoritative genome file ('{os.path.basename(genome_file_path)}')."
-            )
-            logging.warning(
-                "Any transcripts or features on these chromosomes will be effectively ignored by the aligner"
-            )
-            logging.warning(
-                "and downstream tools like bedtools. This can lead to unexpected results."
-            )
-
-            # Print a manageable list of the problematic chromosomes.
-            # If there are too many, just show the first 10.
-            preview_list = sorted(list(chroms_in_gtf_but_not_genome))
-            for chrom in preview_list[:10]:
-                logging.warning(f"  - {chrom}")
-            if len(preview_list) > 10:
-                logging.warning(f"  - ... and {len(preview_list) - 10} more.")
-
-            logging.warning(
-                "Please ensure your GTF and genome files are derived from the exact same reference assembly."
-            )
-            logging.warning("=" * 80)
-        else:
-            logging.info(
-                "✓ Chromosome name consistency check passed. All GTF chromosomes are present in the genome file."
-            )
-
     if duplicates:
         logging.error(f"Found {len(duplicates)} duplicate transcript IDs between GTFs!")
         logging.error(f"Examples: {list(duplicates)[:5]}")
@@ -1314,6 +718,10 @@ def build_comprehensive_annotation(
     all_transcript_exons = {}
     all_transcript_exons.update(gene_transcript_exons)
     all_transcript_exons.update(te_transcript_exons)
+
+    # Compute unique exonic territory (genome-wide, strand-aware)
+    # Protein-coding only for now — TE overlaps handled by EM, not floors
+    unique_territory = compute_unique_territory(gene_transcript_info)
 
     # Compute junction data
     junction_map, transcript_unique_junctions = compute_junction_data(
@@ -1351,7 +759,8 @@ def build_comprehensive_annotation(
             "transcript_length": info["transcript_length"],
             "n_exons": len(info["exons"]),
             "feature_type": info["feature_type"],
-            "tsl": info["tsl"],  # Include TSL
+            "tsl": info["tsl"],
+            "unique_territory_bp": unique_territory.get(tid, 0),
         }
         tsl_distribution[info["tsl"]] += 1
 
@@ -1442,58 +851,17 @@ def build_comprehensive_annotation(
     gene_checksum = calculate_gtf_checksum(gene_gtf)
     te_checksum = calculate_gtf_checksum(te_gtf) if te_gtf else None
 
-    # block for generating rescue features
-    if rescue_data:
-        logging.info(
-            "Starting process to identify unique exonic territories and comparator regions..."
-        )
-        candidate_map = characterize_unique_exonic_territory_parallel(
-            subset_relationships_int,
-            gene_transcript_exons,
-            int_to_string,
-            min_unique_size=30,
-        )
-        if candidate_map:
-            logging.info(
-                f"  Identified {len(candidate_map)} candidate subsets with potential unique territory."
-            )
-            logging.info("  Building interval trees for definitive overlap checking...")
-            # Build interval trees for all exons
-            interval_trees = build_interval_trees(gene_transcript_exons, string_to_int)
-            logging.info(
-                "  Performing definitive overlap checking to confirm unambiguous territory..."
-            )
-            final_rescue_map = find_unambiguous_territory(
-                candidate_map, interval_trees, transcript_info_int
-            )
-            if final_rescue_map:
-                logging.info(
-                    f"  Confirmed {len(final_rescue_map)} subsets with unambiguous unique territory after overlap checking."
-                )
-                # Write to bed
-                subset_coverage_bed_path = (
-                    f"{output_prefix}_subset_coverage_features.bed"
-                )
-                subset_coverage_territory_mapping = (
-                    write_territories_to_bed_with_mapping(
-                        final_rescue_map,
-                        transcript_info_int,
-                        subset_coverage_bed_path,
-                        chrom_order,
-                    )
-                )
-            else:
-                logging.info(
-                    "  No subsets confirmed with unambiguous unique territory after overlap checking."
-                )
-        else:
-            logging.info(
-                "  No candidate subsets identified with potential unique territory."
-            )
-    else:
-        logging.info(
-            "Skipping unique exonic territory and comparator region generation as per user request."
-        )
+    # Build EqC builder data structures (ExonIntervalIndex + junction_unstranded)
+    from majec.eqc_builder import (
+        build_exon_index_from_annotation,
+        build_junction_unstranded_lookup,
+    )
+
+    logging.info("Building EqC builder data structures for annotation...")
+    exon_index = build_exon_index_from_annotation(all_transcript_exons, string_to_int)
+    junction_unstranded = build_junction_unstranded_lookup(
+        junction_map_int, junction_int_to_string
+    )
 
     # Build complete annotation object
     annotation_data = {
@@ -1528,27 +896,13 @@ def build_comprehensive_annotation(
         "transcript_unique_junctions": transcript_unique_junctions_int,
         "subset_relationships": subset_relationships_int,
         "junction_competitors": junction_competitors_int,
-        # subset coverage data
-        "subset_coverage_features": (
-            final_rescue_map if rescue_data and final_rescue_map else None
-        ),
-        "subset_coverage_territory_mapping": (
-            subset_coverage_territory_mapping
-            if rescue_data and final_rescue_map
-            else None
-        ),
+        # EqC builder data (precomputed for runtime)
+        "exon_index": exon_index,
+        "junction_unstranded": junction_unstranded,
         # Metadata
         "metadata": {
             "gene_gtf": os.path.abspath(gene_gtf),
             "te_gtf": os.path.abspath(te_gtf) if te_gtf else None,
-            "subset_coverage_features_bed_path": (
-                os.path.abspath(subset_coverage_bed_path)
-                if rescue_data and final_rescue_map
-                else None
-            ),
-            "genome_file_path": (
-                os.path.abspath(genome_file_path) if genome_file_path else None
-            ),
             "gene_checksum": gene_checksum,
             "te_checksum": te_checksum,
             "creation_date": datetime.now().isoformat(),
@@ -1660,26 +1014,8 @@ def main():
         "--output", default="majec", help="Output prefix for generated files"
     )
     parser.add_argument("--validate", help="Validate existing annotation file")
-    parser.add_argument(
-        "--generate_rescue_features",
-        action="store_true",
-        help="Perform advanced analysis to identify unique exon regions for subset rescue/penalty. "
-        "Requires the 'intervaltree' library.",
-    )
-    parser.add_argument(
-        "--genome_file_path",
-        help="Path to a plain text file listing chromosome/contig names and sizes, one per line, "
-        "in the exact sort order used by the BAM files. "
-        "(For STAR users, this is the 'chrNameLength.txt' file in your genome index directory)."
-        "Required if --generate_rescue_features is set.",
-    )
 
     args = parser.parse_args()
-    if args.generate_rescue_features and not args.genome_file_path:
-        parser.error(
-            "--genome_file_path is required when --generate_rescue_features is set."
-        )
-        sys.exit(1)
 
     # Mode 1: Validate existing annotation
     if args.validate:
@@ -1694,15 +1030,13 @@ def main():
     logging.info("building new annotation...")
     # Mode 2: Build new annotation
     annotation_data = build_comprehensive_annotation(
-        args.gene_gtf,
-        args.te_gtf,
-        args.output,
-        args.generate_rescue_features,
-        args.genome_file_path,
+        args.gene_gtf, args.te_gtf, args.output
     )
 
     logging.info("\nUsage with MAJEC pipeline:")
-    logging.info(f"  python MAJEC.py --annotation {args.output}_annotations.pkl.gz ...")
+    logging.info(
+        f"  majec_run_pipeline --annotation {args.output}_annotations.pkl.gz --bams ... --prefix ..."
+    )
 
 
 if __name__ == "__main__":

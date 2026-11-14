@@ -12,9 +12,9 @@ import json
 
 
 class PipelineCache:
-    """Manages caching of featureCounts results for parameter exploration."""
+    """Manages caching of EqC builder results for parameter exploration."""
 
-    CACHE_VERSION = "1.0"
+    CACHE_VERSION = "2.0"
 
     def __init__(self, cache_dir="pipeline_cache"):
         self.cache_dir = cache_dir
@@ -53,7 +53,31 @@ class PipelineCache:
             "strandedness": args.strandedness,
             "paired_end": args.paired_end,
             "use_junctions": True,
+            # EqC method — distinguishes junction-aware EqC caches from old featureCounts caches
+            "eqc_method": "junction_eqc",
+            # AS-weighted scoring (changes EqC counts for multimappers)
+            "use_alignment_scoring": getattr(args, "use_alignment_scoring", False),
+            "as_temperature": (
+                getattr(args, "as_temperature", 10.0)
+                if getattr(args, "use_alignment_scoring", False)
+                else None
+            ),
         }
+
+        # Long-read multiplicity options change which alignments enter the EqCs.
+        # They join the key only when set away from their defaults, so caches
+        # built with the defaults (every short-read run) keep their existing keys.
+        lr_options = {
+            "derive_multiplicity": getattr(args, "derive_multiplicity", "auto"),
+            "lr_score_ratio": getattr(args, "lr_score_ratio", 0.0) or 0.0,
+            "lr_min_mapq": getattr(args, "lr_min_mapq", None),
+        }
+        if lr_options != {
+            "derive_multiplicity": "auto",
+            "lr_score_ratio": 0.0,
+            "lr_min_mapq": None,
+        }:
+            key_factors.update(lr_options)
 
         # Create hash
         key_string = json.dumps(key_factors, sort_keys=True)

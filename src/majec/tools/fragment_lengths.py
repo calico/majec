@@ -1,5 +1,19 @@
 #!/usr/bin/env python
 # get_cDNA_fragment_stats.py
+"""
+Estimate cDNA fragment-length statistics (mean, SD) from BAM files.
+
+Since 0.2.0 the pipeline measures the fragment-length distribution itself during
+the EqC builder's BAM scan, in transcript coordinates, and --frag_stats_dir only
+overrides that. This tool is kept for reproducing runs made with earlier
+versions.
+
+It samples properly paired, unspliced alignments from a genome BAM and uses
+their template length (TLEN), restricted to [min_len, max_len]. Pairs whose
+mates lie in different exons can include intron length in TLEN, so on spliced
+libraries its estimates can differ from transcript-coordinate measurements
+(see docs/algorithm_details.md, "Effective length and TPM").
+"""
 
 import subprocess
 import os

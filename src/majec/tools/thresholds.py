@@ -55,7 +55,9 @@ def run_featurecounts_for_sample(args_tuple):
     output_path = os.path.join(temp_dir, "fc_output.tsv")
 
     try:
-        paired_end_flag = "-p" if args.paired_end else ""
+        # --countReadPairs counts fragments, the unit majec_run_pipeline uses for
+        # paired-end data (featureCounts counts each mate without it; subread >=2.0.2).
+        paired_end_flag = "-p --countReadPairs" if args.paired_end else ""
 
         cmd = (
             f'featureCounts -a "{gtf_path}" -o "{output_path}" -s {args.strandedness} '

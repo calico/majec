@@ -509,11 +509,15 @@ def calculate_differential_confidence_vectorized(
     priors_index = current_priors.index.values
     priors_lookup = {idx: i for i, idx in enumerate(priors_index)}
 
-    # Collect all competitive relationships
-    all_transcript_data = defaultdict(list)
-    abs_inter_dist_scores = defaultdict(list)
+    # Online accumulators — no intermediate storage of per-interaction dicts.
+    # Each transcript gets lightweight running sums instead of lists of dicts.
+    # [0]=total_class_weight, [1]=weighted_avg_dist_sum, [2]=weighted_min_dist_sum,
+    # [3]=weighted_abs_inter_dist_sum, [4]=total_dom_reads, [5]=n_competitive_classes
+    transcript_accum = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0])
+    # Per-competitor accumulated weights (needed for hardest_competitor and intra/inter fracs)
     all_transcript_competitors = defaultdict(lambda: defaultdict(float))
-    # Combine the two dictionaries explicitly to be safe.
+    # Per-gene external competition weights (only for inter-genic classes, small)
+    transcript_ext_gene_weights = defaultdict(lambda: defaultdict(float))
 
     def _process_one_group_type(groups_dict):
         for feature_set, read_count in groups_dict.items():
@@ -562,16 +566,13 @@ def calculate_differential_confidence_vectorized(
 
             gene_allocations = None
             if is_inter_genic_class:
-                # This expensive calculation now happens only ONCE per inter-genic class.
                 gene_allocations = defaultdict(float)
                 for t_int, alloc in zip(valid_features, allocations):
                     gene_allocations[transcript_to_gene.get(t_int, "UNKNOWN")] += alloc
 
-            # Vectorized distinguishability calculation
             for i, (transcript, my_allocation) in enumerate(
                 zip(expressed_features, expressed_allocations)
             ):
-                # Calculate differences with all others
                 other_mask = np.ones(len(allocations), dtype=bool)
                 other_mask[np.where(valid_features == transcript)[0]] = False
 
@@ -586,42 +587,36 @@ def calculate_differential_confidence_vectorized(
                 other_allocations = allocations[other_mask]
                 other_features = valid_features[other_mask]
 
-                # Vectorized metrics
                 diffs = np.abs(my_allocation - other_allocations)
                 avg_diff = np.mean(diffs)
                 min_diff = np.min(diffs)
 
                 class_weight = read_count / priors_array[priors_lookup[transcript]]
 
-                # --- Calculate Absolute Inter-Genic Score (with ELSE block) ---
+                # Accumulate directly into running sums
+                acc = transcript_accum[transcript]
+                acc[0] += class_weight
+                acc[1] += avg_diff * class_weight
+                acc[2] += min_diff * class_weight
+                acc[4] += dominant_reads
+                acc[5] += 1
+
                 if is_inter_genic_class:
                     target_gene = transcript_to_gene.get(transcript, "UNKNOWN")
                     my_gene_total = gene_allocations[target_gene]
                     abs_score = abs(my_gene_total - (1.0 - my_gene_total))
-                    abs_inter_dist_scores[transcript].append((abs_score, class_weight))
-
+                    acc[3] += abs_score * class_weight
+                    for gene, allocation in gene_allocations.items():
+                        if gene != target_gene:
+                            transcript_ext_gene_weights[transcript][gene] += (
+                                class_weight * allocation
+                            )
                 else:
-                    # FAST PATH: Intra-genic class gets a perfect score.
-                    abs_inter_dist_scores[transcript].append((1.0, class_weight))
+                    acc[3] += 1.0 * class_weight
 
+                comp_dict = all_transcript_competitors[transcript]
                 for competitor in other_features:
-                    # Accumulate the weight for this specific transcript-competitor interaction
-                    all_transcript_competitors[transcript][competitor] += class_weight
-
-                all_transcript_data[transcript].append(
-                    {
-                        "class_size": len(features),
-                        "my_share": my_allocation,
-                        "avg_distinguishability": avg_diff,
-                        "min_distinguishability": min_diff,
-                        "class_weight": class_weight,
-                        "competitors": list(other_features),
-                        "dominant_reads": dominant_reads,
-                        "gene_allocations": (
-                            dict(gene_allocations) if gene_allocations else None
-                        ),
-                    }
-                )
+                    comp_dict[competitor] += class_weight
 
     logging.info(
         f"[{sample_name}] Processing {len(unique_mapper_groups)} unique mapper groups for distinguishability..."
@@ -635,16 +630,14 @@ def calculate_differential_confidence_vectorized(
 
     final_scores = {}
 
-    # Loop over ALL expressed transcripts to ensure none are missed
     for transcript in expressed_transcripts:
 
         my_gene = transcript_to_gene.get(transcript, "UNKNOWN")
         my_type = transcript_to_type.get(transcript, "unknown")
 
-        competitive_sets = all_transcript_data.get(transcript)
+        acc = transcript_accum.get(transcript)
 
-        # --- Case 1: The transcript had NO competitive interactions (it was unique-only) ---
-        if not competitive_sets:
+        if not acc:
             final_scores[transcript] = {
                 "distinguishability_score": 1.0,
                 "min_distinguishability": np.nan,
@@ -653,7 +646,7 @@ def calculate_differential_confidence_vectorized(
                 "n_unique_competitors": 0,
                 "hardest_competitor": None,
                 "hardest_competitor_gene": None,
-                "strongest_external_competitor_gene": None,  # New
+                "strongest_external_competitor_gene": None,
                 "hardest_competitor_weight_frac": np.nan,
                 "intra_gene_competition_frac": np.nan,
                 "inter_gene_competition_frac": np.nan,
@@ -664,69 +657,14 @@ def calculate_differential_confidence_vectorized(
             }
             continue
 
-        # --- Case 2: The transcript has competitive data. Aggregate it in a SINGLE PASS. ---
-
-        # Initialize all accumulators for this transcript
-        total_class_weight = 0.0
-        weighted_avg_dist_sum = 0.0
-        weighted_min_dist_sum = 0.0
-        total_dom_reads = 0.0
-        weighted_abs_inter_dist_sum = 0.0
-
-        competitor_weights = defaultdict(float)
-        external_gene_weights = defaultdict(float)
-
-        for interaction in competitive_sets:
-            class_weight = interaction["class_weight"]
-            total_class_weight += class_weight
-
-            # Aggregate original distinguishability metrics
-            weighted_avg_dist_sum += (
-                interaction["avg_distinguishability"] * class_weight
-            )
-            weighted_min_dist_sum += (
-                interaction["min_distinguishability"] * class_weight
-            )
-            total_dom_reads += interaction["dominant_reads"]
-
-            # Aggregate individual competitor weights
-            for competitor in interaction["competitors"]:
-                competitor_weights[competitor] += class_weight
-
-            # Aggregate absolute inter-genic score and external gene weights
-            gene_allocs = interaction.get("gene_allocations")
-            if gene_allocs:  # This was an inter-genic class
-                my_gene_total = gene_allocs.get(my_gene, 0.0)
-                abs_score = abs(my_gene_total - (1.0 - my_gene_total))
-                weighted_abs_inter_dist_sum += abs_score * class_weight
-
-                # Accumulate weights for external genes
-                for gene, allocation in gene_allocs.items():
-                    if gene != my_gene:
-                        external_gene_weights[gene] += class_weight * allocation
-            else:  # This was an intra-genic class
-                weighted_abs_inter_dist_sum += 1.0 * class_weight
-
-        # --- Now, calculate the final values from the accumulated sums ---
-
-        # Final scores
-        weighted_avg = (
-            weighted_avg_dist_sum / total_class_weight
-            if total_class_weight > 0
-            else 1.0
-        )
-        weighted_min = (
-            weighted_min_dist_sum / total_class_weight
-            if total_class_weight > 0
-            else 1.0
-        )
+        total_class_weight = acc[0]
+        weighted_avg = acc[1] / total_class_weight if total_class_weight > 0 else 1.0
+        weighted_min = acc[2] / total_class_weight if total_class_weight > 0 else 1.0
         final_abs_inter_dist = (
-            weighted_abs_inter_dist_sum / total_class_weight
-            if total_class_weight > 0
-            else 1.0
+            acc[3] / total_class_weight if total_class_weight > 0 else 1.0
         )
 
-        # Final competitor analysis
+        competitor_weights = all_transcript_competitors.get(transcript, {})
         hardest_competitor_id, strongest_weight = (
             max(competitor_weights.items(), key=lambda item: item[1])
             if competitor_weights
@@ -741,13 +679,11 @@ def calculate_differential_confidence_vectorized(
         frac_intra = intra_weight / total_comp_weight if total_comp_weight > 0 else 0.0
         frac_inter = 1.0 - frac_intra
 
+        ext_genes = transcript_ext_gene_weights.get(transcript, {})
         strongest_external_gene = (
-            max(external_gene_weights.items(), key=lambda item: item[1])[0]
-            if external_gene_weights
-            else None
+            max(ext_genes.items(), key=lambda item: item[1])[0] if ext_genes else None
         )
 
-        # Classify competition type based on the strongest competitor
         competitor_gene = transcript_to_gene.get(hardest_competitor_id, "UNKNOWN")
         competitor_type = transcript_to_type.get(hardest_competitor_id, "unknown")
 
@@ -771,7 +707,7 @@ def calculate_differential_confidence_vectorized(
             "distinguishability_score": weighted_avg,
             "min_distinguishability": weighted_min,
             "ambiguous_fraction_abs_inter_dist": final_abs_inter_dist,
-            "n_competitive_classes": len(competitive_sets),
+            "n_competitive_classes": acc[5],
             "n_unique_competitors": len(competitor_weights),
             "hardest_competitor": hardest_competitor_id,
             "hardest_competitor_gene": transcript_to_gene.get(
@@ -786,7 +722,7 @@ def calculate_differential_confidence_vectorized(
             "competition_type": competition_type,
             "my_gene": my_gene,
             "transcript_type": my_type,
-            "dominant_reads": total_dom_reads,
+            "dominant_reads": acc[4],
         }
 
     if final_scores:
@@ -1348,44 +1284,6 @@ def calculate_junction_read_discord(pre_em_counts, post_em_counts):
                 discord_scores[transcript] = 0
 
     return discord_scores
-
-
-def add_shared_read_metrics(df, unique_groups, multi_groups):
-    """
-    Calculate what fraction of reads are shared vs unique.
-    """
-    shared_fraction = {}
-
-    for transcript in df.index:
-        unique_reads = sum(
-            count
-            for group, count in unique_groups.items()
-            if len(group) == 1 and group[0] == transcript
-        )
-
-        shared_reads = sum(
-            count
-            for group, count in unique_groups.items()
-            if transcript in group and len(group) > 1
-        )
-        shared_reads += sum(
-            count for group, count in multi_groups.items() if transcript in group
-        )
-
-        total = unique_reads + shared_reads
-        if total > 0:
-            shared_fraction[transcript] = shared_reads / total
-        else:
-            shared_fraction[transcript] = 1.0  # No reads = maximally uncertain
-
-    df["shared_read_fraction"] = pd.Series(shared_fraction)
-
-    # Penalize distinguishability when sharing is extreme
-    df["adjusted_distinguishability"] = df["distinguishability_score"] * (
-        1 - df["shared_read_fraction"]
-    )
-
-    return df
 
 
 def process_and_save_sample_outputs(args_tuple):

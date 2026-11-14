@@ -7,9 +7,8 @@ from plotly.subplots import make_subplots
 import sys
 import os
 from scipy import stats
-from typing import Dict, List, Tuple, Optional
+from typing import Dict
 import zipfile
-import plotly.io as pio
 import io
 import json
 import subprocess
@@ -115,9 +114,7 @@ def fetch_gene_data_raw(db_conn, gene_id_or_transcript_id, sample_ids):
             p.completeness_penalty,
             p.tsl_penalty,
             p.n_observed_junctions,
-            p.n_expected_junctions,
-            p.territory_confidence,
-            p.territory_evidence_ratio
+            p.n_expected_junctions
         FROM
             -- START with the source of truth: all transcripts for our gene
             (SELECT transcript_id_int FROM transcript_annotations WHERE transcript_id_int IN {transcript_ids_sql}) AS ta
@@ -163,35 +160,7 @@ def fetch_gene_data_raw(db_conn, gene_id_or_transcript_id, sample_ids):
     """
     df_junctions_long = pd.read_sql_query(query_junctions, db_conn)
 
-    # --- Step 5: Fetch territories (long format) ---
-    print("  -> Fetching territory data...")
-
-    query_territories = f"""
-        SELECT
-            tt.transcript_id_int,
-            tt.territory_role,
-            tr.chr,
-            tr.start,
-            tr.end,
-            tr.length,
-            tc.sample_id_int,
-            sm.sample_id,
-            COALESCE(tc.mean_coverage, 0) AS mean_coverage
-        FROM transcript_territories AS tt
-        JOIN territory_regions AS tr 
-            ON tt.region_id = tr.region_id
-        CROSS JOIN (SELECT DISTINCT sample_id_int FROM sample_metadata 
-                   WHERE sample_id_int IN {sample_ids_sql}) AS samples
-        LEFT JOIN territory_coverage AS tc
-            ON tt.region_id = tc.region_id 
-            AND tc.sample_id_int = samples.sample_id_int
-        LEFT JOIN sample_metadata AS sm
-            ON samples.sample_id_int = sm.sample_id_int
-        WHERE tt.transcript_id_int IN {transcript_ids_sql}
-    """
-    df_territories_long = pd.read_sql_query(query_territories, db_conn)
-
-    # --- Step 6: Fetch normalization factors ---
+    # --- Step 5: Fetch normalization factors ---
     print("  -> Fetching size factors...")
 
     query_size_factors = f"""
@@ -249,7 +218,6 @@ def fetch_gene_data_raw(db_conn, gene_id_or_transcript_id, sample_ids):
         "annotations": df_annotations,
         "transcripts_long": df_transcripts_long,
         "junctions_long": df_junctions_long,
-        "territories_long": df_territories_long,
         "size_factors": df_size_factors,
         "aggregated_long": df_aggregated_long,
         "subset_links": df_subset_links,
@@ -369,14 +337,12 @@ def aggregate_replicate_data(raw_data, group_A_ids, group_B_ids=None):
 
     df_transcripts_long = raw_data["transcripts_long"]
     df_junctions_long = raw_data["junctions_long"]
-    df_territories_long = raw_data["territories_long"]
     df_aggregated_long = raw_data["aggregated_long"]
     df_size_factors = raw_data["size_factors"]
 
     data_to_normalize = {
         "transcripts": (df_transcripts_long, ["count", "initial_count", "final_count"]),
         "junctions": (df_junctions_long, ["read_count"]),
-        "territories": (df_territories_long, ["mean_coverage"]),
         "aggregated": (df_aggregated_long, ["count"]),
     }
 
@@ -405,11 +371,8 @@ def aggregate_replicate_data(raw_data, group_A_ids, group_B_ids=None):
             "tsl_penalty": ["mean"],
             "n_observed_junctions": ["mean"],
             "n_expected_junctions": ["mean"],
-            "territory_confidence": ["mean", "std", "count"],
-            "territory_evidence_ratio": ["mean", "std", "count"],
         },
         "junctions": {"norm_read_count": ["mean", "std", "count"]},
-        "territories": {"norm_mean_coverage": ["mean", "std", "count"]},
         "aggregated": {
             "norm_count": ["mean", "std", "count"],
             "tpm": ["mean", "std", "count"],
@@ -434,16 +397,6 @@ def aggregate_replicate_data(raw_data, group_A_ids, group_B_ids=None):
                 "_".join(col).strip() for col in df_unstacked.columns.values
             ]
             agged_dfs[f"{key}_agg"] = df_unstacked
-        elif key == "territories":
-            df_agg = df.groupby(
-                ["transcript_id_int", "territory_role", "start", "end", "group"]
-            ).agg(agg_functions[key])
-            df_unstacked = df_agg.unstack()
-            df_unstacked.columns = [
-                "_".join(col).strip() for col in df_unstacked.columns.values
-            ]
-            agged_dfs[f"{key}_agg"] = df_unstacked
-
         else:
             df_agg = df.groupby(["transcript_id_int", "group"]).agg(agg_functions[key])
 
@@ -579,116 +532,6 @@ def calculate_junction_confidence_intervals(agged_dfs, raw_data, n_boot=1000):
     agged_dfs["junctions_agg"] = agged_dfs["junctions_agg"].join(df_ci)
 
     return agged_dfs
-
-
-def calculate_junction_statistics(agged_dfs, raw_data):
-    """
-    Perform statistical tests on junction usage between conditions.
-    """
-
-    df_junctions_long = raw_data["junctions_long"]
-
-    # Get junction counts per sample per group
-    junctions_by_group = df_junctions_long.groupby(
-        ["transcript_id_int", "junction_id_str", "group"]
-    )
-
-    results = []
-
-    for (tid, junc_id, group), group_data in junctions_by_group:
-        if group == "A":
-            counts_A = group_data["norm_read_count"].values
-        elif group == "B":
-            counts_B = group_data["norm_read_count"].values
-
-    # For each junction, run appropriate test
-    for tid, junc_id in (
-        df_junctions_long[["transcript_id_int", "junction_id_str"]]
-        .drop_duplicates()
-        .values
-    ):
-        counts_A = df_junctions_long[
-            (df_junctions_long["transcript_id_int"] == tid)
-            & (df_junctions_long["junction_id_str"] == junc_id)
-            & (df_junctions_long["group"] == "A")
-        ]["norm_read_count"].values
-        counts_B = df_junctions_long[
-            (df_junctions_long["transcript_id_int"] == tid)
-            & (df_junctions_long["junction_id_str"] == junc_id)
-            & (df_junctions_long["group"] == "B")
-        ]["norm_read_count"].values
-
-        # Option 1: T-test on PSI values (if sufficient replicates)
-        if len(counts_A) >= 3 and len(counts_B) >= 3:
-            # Calculate PSI for each replicate
-            total_A = (
-                df_junctions_long[(df_junctions_long["group"] == "A")]
-                .groupby("sample_id_int")["norm_read_count"]
-                .sum()
-            )
-            total_B = (
-                df_junctions_long[(df_junctions_long["group"] == "B")]
-                .groupby("sample_id_int")["norm_read_count"]
-                .sum()
-            )
-
-            psi_A = counts_A / (total_A.values + 1e-6)
-            psi_B = counts_B / (total_B.values + 1e-6)
-
-            # Welch's t-test (doesn't assume equal variance)
-            t_stat, p_value = stats.ttest_ind(psi_A, psi_B, equal_var=False)
-
-            # Effect size (Cohen's d)
-            pooled_std = np.sqrt((np.var(psi_A) + np.var(psi_B)) / 2)
-            cohens_d = (np.mean(psi_B) - np.mean(psi_A)) / (pooled_std + 1e-6)
-
-        # Option 2: Mann-Whitney U for small sample sizes
-        elif len(counts_A) >= 2 and len(counts_B) >= 2:
-            u_stat, p_value = stats.mannwhitneyu(
-                counts_A, counts_B, alternative="two-sided"
-            )
-            t_stat = u_stat
-            cohens_d = np.nan
-
-        # Option 3: Fisher's exact test for presence/absence if very few replicates
-        else:
-            present_A = np.sum(counts_A > 0)
-            absent_A = len(counts_A) - present_A
-            present_B = np.sum(counts_B > 0)
-            absent_B = len(counts_B) - present_B
-
-            odds_ratio, p_value = stats.fisher_exact(
-                [[present_A, absent_A], [present_B, absent_B]]
-            )
-            t_stat = odds_ratio
-            cohens_d = np.nan
-
-        # Multiple testing correction will be needed later
-        results.append(
-            {
-                "transcript_id_int": tid,
-                "junction_id_str": junc_id,
-                "mean_A": np.mean(counts_A),
-                "mean_B": np.mean(counts_B),
-                "p_value": p_value,
-                "test_statistic": t_stat,
-                "effect_size": cohens_d,
-                "n_reps_A": len(counts_A),
-                "n_reps_B": len(counts_B),
-            }
-        )
-
-    df_stats = pd.DataFrame(results)
-
-    # Multiple testing correction (Benjamini-Hochberg)
-    from statsmodels.stats.multitest import multipletests
-
-    if len(df_stats) > 0:
-        _, df_stats["p_adjusted"], _, _ = multipletests(
-            df_stats["p_value"], method="fdr_bh", alpha=0.05
-        )
-
-    return df_stats
 
 
 def calculate_expression_statistics(agged_dfs, norm_data):
@@ -984,7 +827,21 @@ def create_junction_arc_plot_aggregated(agged_dfs, raw_data, gene_id, track_spac
                             "line": {"color": "#CCCCCC", "width": 1, "dash": "dot"},
                         }
                     )
-                
+                # if 'n_genes' in junc_row and junc_row['n_genes'] > 1:
+                #     # Create a subtle background highlight
+                #     arc_height_above = base_arc_height + 1.5 * (np.log1p(read_mean_A) / np.log1p(max_read_count))
+                #     arc_height_below = base_arc_height + 1.5 * (np.log1p(read_mean_B) / np.log1p(max_read_count))
+
+                #     all_shapes.append({
+                #         'type': 'rect',
+                #         'x0': x0 - 0.1,
+                #         'x1': x1 + 0.1,
+                #         'y0': y_position - arc_height_below - 0.2,
+                #         'y1': y_position + arc_height_above + 0.2,
+                #         'fillcolor': 'rgba(255, 0, 255, 0.15)',
+                #         'line': {'width': 0},
+                #         'layer': 'below'
+                #     })
                 if "n_genes" in junc_row and junc_row["n_genes"] > 1:
                     other_genes = junc_row.get("all_genes", "").replace(";", ", ")
                     hover_text += f"<br><b>⚠ Multi-gene junction ({junc_row['n_genes']} genes)</b>"
@@ -1669,7 +1526,6 @@ def create_junction_penalty_heatmap_plotly(
         - 'transcripts': DataFrame with transcript information
         - 'junctions': DataFrame with junction evidence
         - 'subset_links': DataFrame with subset/superset relationships
-        - 'territories': DataFrame with territory data
         - 'aggregated': DataFrame with gene-level aggregated data
     sample_name : str
         to indicate which sample being visualized
@@ -2251,611 +2107,6 @@ def draw_transcript_bilateral(
                 )
 
 
-def visualize_subset_focused_territories(
-    aggregated_data: Dict,
-    norm_data: Dict,
-    subset_tid: int,
-    show_individual_samples: bool = True,
-):
-    """
-    Create a comprehensive visualization showing a subset transcript with ALL its superset partners.
-    Features bilateral junction arcs, territory coverage, and metrics panel.
-
-    Parameters:
-    -----------
-    aggregated_data : dict
-        Dictionary from aggregate_replicate_data with aggregated statistics
-    norm_data : dict
-        Dictionary from fetch_gene_data_raw after size factor count normalization (long-format data)
-    subset_tid : int
-        Transcript ID (int) of the subset transcript
-    show_individual_samples : bool
-        Whether to show individual sample distributions
-    """
-
-    # Extract relevant data
-    df_transcripts = aggregated_data["transcripts_agg"]
-    df_junctions = aggregated_data["junctions_agg"]
-    df_territories = aggregated_data["territories_agg"]
-    df_subset_links = norm_data["subset_links"]
-
-    # Get subset info
-    subset_info = df_transcripts[
-        df_transcripts["transcript_id_int"] == subset_tid
-    ].iloc[0]
-
-    # Check if this subset has significant penalties
-    penalty_a = subset_info.get("adjusted_subset_penalty_mean_A", 1.0)
-    penalty_b = subset_info.get("adjusted_subset_penalty_mean_B", 1.0)
-
-    if (
-        pd.isna(penalty_a)
-        or pd.isna(penalty_b)
-        or (penalty_a > 0.99 and penalty_b > 0.99)
-    ):
-        print(f"Skipping {subset_info['transcript_id_str']} - no significant penalties")
-        return None
-
-    # Check if this subset has territory data
-    subset_territories = df_territories[
-        (df_territories.index.get_level_values("transcript_id_int") == subset_tid)
-        & (df_territories.index.get_level_values("territory_role") == "unique")
-    ]
-
-    if subset_territories.empty:
-        print(f"Skipping {subset_info['transcript_id_str']} - no territory data")
-        return None
-
-    # Get all superset partners for this subset
-    superset_ids = df_subset_links[
-        df_subset_links["subset_transcript_id_int"] == subset_tid
-    ]["superset_transcript_id_int"].tolist()
-
-    if len(superset_ids) == 0:
-        print(f"No supersets found for subset {subset_info['transcript_id_str']}")
-        return None
-
-    # Get superset info
-    superset_infos = df_transcripts[
-        df_transcripts["transcript_id_int"].isin(superset_ids)
-    ].sort_values("tpm_mean_A", ascending=False)
-
-    # Get all relevant junctions and territories
-    all_transcript_ids = [subset_tid] + superset_ids
-    all_junctions = df_junctions[
-        df_junctions.index.get_level_values("transcript_id_int").isin(
-            all_transcript_ids
-        )
-    ].copy()
-
-    # Parse junction coordinates
-    def parse_junction_coords(junction_str):
-        parts = junction_str.split(":")
-        coords = parts[1].split("-")
-        return int(coords[0]), int(coords[1])
-
-    # Get genomic range
-    all_coords = []
-    if not all_junctions.empty:
-        for junc_str in all_junctions.index.get_level_values(
-            "junction_id_str"
-        ).unique():
-            start, end = parse_junction_coords(junc_str)
-            all_coords.extend([start, end])
-
-    # Get territory coordinates
-    subset_territories = df_territories[
-        (df_territories.index.get_level_values("transcript_id_int") == subset_tid)
-        & (df_territories.index.get_level_values("territory_role") == "unique")
-    ].copy()
-
-    comparator_territories = df_territories[
-        (df_territories.index.get_level_values("transcript_id_int") == subset_tid)
-        & (df_territories.index.get_level_values("territory_role") == "comparator")
-    ].copy()
-
-    if not subset_territories.empty:
-        all_coords.extend(
-            subset_territories.index.get_level_values("start").tolist()
-            + subset_territories.index.get_level_values("end").tolist()
-        )
-    if not comparator_territories.empty:
-        all_coords.extend(
-            comparator_territories.index.get_level_values("start").tolist()
-            + comparator_territories.index.get_level_values("end").tolist()
-        )
-
-    if not all_coords:
-        print("No coordinate data found!")
-        return None
-
-    min_coord = min(all_coords) - 500
-    max_coord = max(all_coords) + 500
-
-    # Calculate number of transcript rows needed
-    n_transcripts = 1 + len(superset_ids)  # subset + all supersets
-
-    # Create figure with dynamic row allocation
-    # Adjust heights to reduce excessive spacing
-    transcript_height = min(
-        0.08, 0.4 / n_transcripts
-    )  # Cap individual transcript height
-    territory_height = 0.4  # Fixed height for territory panel
-
-    row_heights = []
-    row_specs = []
-    subplot_titles = []
-
-    # Add rows for each transcript (subset + supersets)
-    for i in range(n_transcripts):
-        row_heights.append(transcript_height)
-        if i == 0:
-            # First row: spans all transcript rows plus territory row for the metrics panel
-            row_specs.append(
-                [
-                    {"colspan": 2},
-                    None,
-                    {"rowspan": n_transcripts + 1, "secondary_y": True},
-                ]
-            )
-            subplot_titles.extend(["", "", ""])
-        else:
-            # Subsequent rows: the third column is occupied by the rowspan from row 1
-            row_specs.append([{"colspan": 2}, None, None])
-            superset_info = superset_infos.iloc[i - 1]
-            subplot_titles.extend(["", None, None])
-
-    # Add territory coverage row
-    row_heights.append(territory_height)
-    row_specs.append(
-        [{"colspan": 2}, None, None]
-    )  # Third column occupied by metrics panel
-    subplot_titles.extend(["", None, None])
-
-    fig = make_subplots(
-        rows=n_transcripts + 1,
-        cols=3,
-        column_widths=[0.35, 0.35, 0.30],
-        row_heights=row_heights,
-        specs=row_specs,
-        vertical_spacing=0.01,
-        horizontal_spacing=0.07,
-        subplot_titles=subplot_titles,
-    )
-
-    # Color schemes
-    # Color schemes (Revised Territory Palette)
-    territory_unique_color_a = "#66C2A5"  # Soft, vibrant teal green
-    territory_unique_color_b = "#1B9E77"  # Darker, richer teal green
-    territory_comp_color_a = "#B3B3B3"  # Light, neutral grey
-    territory_comp_color_b = "#666666"  # Darker, solid grey
-    junction_color_a = "rgba(150, 50, 50, 0.8)"
-    junction_color_b = "rgba(50, 50, 150, 0.8)"
-
-    # Collect all shapes for bulk updating (performance optimization)
-    all_shapes = []
-
-    # Draw subset transcript
-    draw_transcript_bilateral(
-        fig, all_junctions, subset_tid, subset_info, subset_tid, 1
-    )
-
-    # Draw each superset
-    for i, (_, superset_info) in enumerate(superset_infos.iterrows(), start=2):
-        draw_transcript_bilateral(
-            fig,
-            all_junctions,
-            superset_info["transcript_id_int"],
-            superset_info,
-            subset_tid,
-            i,
-        )
-
-    # Apply all shapes at once for better performance
-    fig.update_layout(shapes=all_shapes)
-
-    # Territory coverage row (bottom panel)
-    territory_row = n_transcripts + 1
-    max_coverage = 0
-
-    # Plot unique territories (above zero)
-    if not subset_territories.empty:
-        for idx, terr in subset_territories.iterrows():
-            start = idx[2] if isinstance(idx, tuple) else 0
-            end = idx[3] if isinstance(idx, tuple) else 0
-
-            cov_a = terr.get("norm_mean_coverage_mean_A", 0)
-            cov_b = terr.get("norm_mean_coverage_mean_B", 0)
-            std_a = terr.get("norm_mean_coverage_std_A", 0)
-            std_b = terr.get("norm_mean_coverage_std_B", 0)
-
-            if not pd.isna(cov_a):
-                max_coverage = max(max_coverage, cov_a + std_a)
-                log_cov = np.log2(cov_a + 1)
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=[start, end, end, start, start],
-                        y=[0, 0, log_cov, log_cov, 0],
-                        fill="toself",
-                        fillcolor=territory_unique_color_a,
-                        line=dict(color=territory_unique_color_a, width=1),
-                        hovertext=f"Unique Territory A<br>Region: {start}-{end}<br>Coverage: {cov_a:.1f}±{std_a:.1f}",
-                        hoverinfo="text",
-                        showlegend=False,
-                        opacity=0.7,
-                    ),
-                    row=territory_row,
-                    col=1,
-                )
-
-            if not pd.isna(cov_b):
-                max_coverage = max(max_coverage, cov_b + std_b)
-                log_cov = np.log2(cov_b + 1)
-                offset = (end - start) * 0.05
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=[
-                            start + offset,
-                            end - offset,
-                            end - offset,
-                            start + offset,
-                            start + offset,
-                        ],
-                        y=[0, 0, log_cov, log_cov, 0],
-                        fill="toself",
-                        fillcolor=territory_unique_color_b,
-                        line=dict(color=territory_unique_color_b, width=1, dash="dot"),
-                        hovertext=f"Unique Territory B<br>Region: {start}-{end}<br>Coverage: {cov_b:.1f}±{std_b:.1f}",
-                        hoverinfo="text",
-                        showlegend=False,
-                        opacity=0.5,
-                    ),
-                    row=territory_row,
-                    col=1,
-                )
-
-    # Plot comparator territories (below zero)
-    if not comparator_territories.empty:
-        for idx, terr in comparator_territories.iterrows():
-            start = idx[2] if isinstance(idx, tuple) else 0
-            end = idx[3] if isinstance(idx, tuple) else 0
-
-            cov_a = terr.get("norm_mean_coverage_mean_A", 0)
-            cov_b = terr.get("norm_mean_coverage_mean_B", 0)
-            std_a = terr.get("norm_mean_coverage_std_A", 0)
-            std_b = terr.get("norm_mean_coverage_std_B", 0)
-
-            if not pd.isna(cov_a):
-                max_coverage = max(max_coverage, cov_a + std_a)
-                log_cov = np.log2(cov_a + 1)
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=[start, end, end, start, start],
-                        y=[0, 0, -log_cov, -log_cov, 0],
-                        fill="toself",
-                        fillcolor=territory_comp_color_a,
-                        line=dict(color=territory_comp_color_a, width=1),
-                        hovertext=f"Comparator Territory A<br>Region: {start}-{end}<br>Coverage: {cov_a:.1f}±{std_a:.1f}",
-                        hoverinfo="text",
-                        showlegend=False,
-                        opacity=0.7,
-                    ),
-                    row=territory_row,
-                    col=1,
-                )
-
-            if not pd.isna(cov_b):
-                max_coverage = max(max_coverage, cov_b + std_b)
-                log_cov = np.log2(cov_b + 1)
-                offset = (end - start) * 0.05
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=[
-                            start + offset,
-                            end - offset,
-                            end - offset,
-                            start + offset,
-                            start + offset,
-                        ],
-                        y=[0, 0, -log_cov, -log_cov, 0],
-                        fill="toself",
-                        fillcolor=territory_comp_color_b,
-                        line=dict(color=territory_comp_color_b, width=1, dash="dot"),
-                        hovertext=f"Comparator Territory B<br>Region: {start}-{end}<br>Coverage: {cov_b:.1f}±{std_b:.1f}",
-                        hoverinfo="text",
-                        showlegend=False,
-                        opacity=0.5,
-                    ),
-                    row=territory_row,
-                    col=1,
-                )
-
-    # RIGHT PANEL: Metrics with grouped violin plots
-    raw_transcripts = pd.DataFrame()
-    if "transcripts_long" in norm_data:
-        raw_transcripts = norm_data["transcripts_long"][
-            norm_data["transcripts_long"]["transcript_id_int"] == subset_tid
-        ]
-
-    metrics = [
-        ("adjusted_subset_penalty", "Penalty", True, False),
-        ("territory_evidence_ratio", "Evidence", True, False),
-        ("tpm", "TPM", False, True),
-    ]
-
-    x_positions = [1, 2.5, 4]
-
-    for i, (metric, label, use_log, secondary_y) in enumerate(metrics):
-        x_base = x_positions[i]
-        plot_created = False
-
-        if not raw_transcripts.empty and f"{metric}" in raw_transcripts.columns:
-            for condition, color, x_offset in [
-                ("A", junction_color_a, -0.2),
-                ("B", junction_color_b, 0.2),
-            ]:
-                condition_data = raw_transcripts[raw_transcripts["group"] == condition]
-                if not condition_data.empty and metric in condition_data.columns:
-                    sample_values = condition_data[metric].dropna()
-
-                    if len(sample_values) > 0:
-                        display_values = (
-                            -np.log10(sample_values + 1e-10)
-                            if use_log
-                            else sample_values
-                        )
-
-                        fig.add_trace(
-                            go.Violin(
-                                x=[x_base + x_offset] * len(display_values),
-                                y=display_values,
-                                width=0.3,
-                                marker_color=color,
-                                opacity=0.6,
-                                name=f"{label} {condition}",
-                                box_visible=True,
-                                meanline_visible=True,
-                                points="all",
-                                pointpos=-0.8,
-                                jitter=0.05,
-                                orientation="v",
-                                hovertext=[
-                                    f"{label} {condition}<br>Sample: {s}<br>Value: {v:.4f}"
-                                    + (
-                                        f"<br>-log10: {-np.log10(v + 1e-10):.2f}"
-                                        if use_log
-                                        else ""
-                                    )
-                                    for s, v in zip(
-                                        condition_data["sample_id_x"], sample_values
-                                    )
-                                ],
-                                hoverinfo="text",
-                                showlegend=False,
-                                scalegroup=f"{metric}",
-                                scalemode="width",
-                            ),
-                            row=1,
-                            col=3,
-                            secondary_y=secondary_y,
-                        )
-                        plot_created = True
-
-        if not plot_created:
-            for condition, color, x_offset in [
-                ("A", junction_color_a, -0.2),
-                ("B", junction_color_b, 0.2),
-            ]:
-                val_mean = subset_info.get(f"{metric}_mean_{condition}", np.nan)
-                val_std = subset_info.get(f"{metric}_std_{condition}", 0)
-
-                if not pd.isna(val_mean):
-                    y_val = -np.log10(val_mean + 1e-10) if use_log else val_mean
-                    y_err = (
-                        abs(-np.log10(max(val_mean - val_std, 1e-10)) - y_val)
-                        if (use_log and val_std > 0)
-                        else val_std
-                    )
-
-                    fig.add_trace(
-                        go.Bar(
-                            x=[x_base + x_offset],
-                            y=[y_val],
-                            width=0.3,
-                            error_y=(
-                                dict(type="data", array=[y_err])
-                                if val_std > 0
-                                else None
-                            ),
-                            marker_color=color,
-                            hovertext=f"{label} {condition}: {val_mean:.3f}±{val_std:.3f}",
-                            hoverinfo="text",
-                            showlegend=False,
-                            opacity=0.7,
-                        ),
-                        row=1,
-                        col=3,
-                    )
-
-    # Update layout
-    title_text = f'Territory Analysis: {subset_info["transcript_id_str"]} with {len(superset_ids)} Superset Partners'
-
-    # Calculate optimal height based on number of transcripts
-    base_height = 400
-    transcript_panel_height = max(200, min(400, n_transcripts * 50))
-    territory_panel_height = 250
-    total_height = base_height + transcript_panel_height + territory_panel_height
-
-    fig.update_layout(
-        title=title_text,
-        height=total_height,
-        width=1600,
-        showlegend=True,
-        hovermode="closest",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-
-    # Add custom title annotations with proper positioning
-    # Calculate y positions for titles based on row structure
-    cumulative_heights = np.cumsum([0] + row_heights)
-    total_height_units = sum(row_heights)
-
-    # Subset title (row 1)
-    fig.add_annotation(
-        text=f'<b>Subset: {subset_info["transcript_id_str"]}</b>',
-        xref="paper",
-        yref="paper",
-        x=0.35,  # Center of left panel
-        y=1 - (cumulative_heights[0] / total_height_units) + 0.02,  # Above first row
-        showarrow=False,
-        font=dict(size=11),
-        xanchor="center",
-    )
-
-    # Territory coverage title
-    fig.add_annotation(
-        text="<b>Territory Coverage (log2 scale)</b>",
-        xref="paper",
-        yref="paper",
-        x=0.35,
-        y=1
-        - (cumulative_heights[n_transcripts] / total_height_units)
-        - 0.05,  # Above territory row
-        showarrow=False,
-        font=dict(size=11),
-        xanchor="center",
-    )
-
-    # Metrics panel title
-    fig.add_annotation(
-        text="<b>Metrics</b>",
-        xref="paper",
-        yref="paper",
-        x=0.82,  # Right panel position
-        y=0.98,  # Near top
-        showarrow=False,
-        font=dict(size=14),
-        xanchor="center",
-    )
-
-    # Update x-axes for transcript rows with linked zoom/pan
-    for i in range(1, n_transcripts + 2):
-        fig.update_xaxes(
-            range=[min_coord, max_coord],
-            title="Genomic Position" if i == n_transcripts + 1 else "",
-            row=i,
-            col=1,
-            showgrid=True,
-            gridcolor="rgba(128,128,128,0.2)",
-            matches="x" if i > 1 else None,
-        )
-
-    # Update x-axis for metrics panel
-    fig.update_xaxes(
-        range=[0.5, 4.5],
-        tickmode="array",
-        tickvals=[1, 2.5, 4],
-        ticktext=["Penalty<br>(-log10)", "Evidence<br>(-log10)", "TPM"],
-        showgrid=False,
-        row=1,
-        col=3,
-    )
-
-    # Update y-axes for transcript rows
-    for i in range(1, n_transcripts + 1):
-        fig.update_yaxes(
-            range=[-0.5, 0.5],
-            showticklabels=False,
-            showgrid=False,
-            zeroline=True,
-            zerolinecolor="black",
-            zerolinewidth=1,
-            row=i,
-            col=1,
-        )
-
-    # Update y-axis for territory coverage
-    y_max = np.log2(max_coverage + 1) * 1.2 if max_coverage > 0 else 5
-    fig.update_yaxes(
-        title="Coverage (log2)",
-        zeroline=True,
-        zerolinecolor="black",
-        zerolinewidth=2,
-        range=[-y_max, y_max],
-        row=territory_row,
-        col=1,
-    )
-
-    # Calculate dynamic ranges
-    penalty_max = max(
-        -np.log10(subset_info.get("adjusted_subset_penalty_mean_A", 0.1) + 1e-10),
-        -np.log10(subset_info.get("adjusted_subset_penalty_mean_B", 0.1) + 1e-10),
-    )
-    tpm_max = max(subset_info.get("tpm_mean_A", 1), subset_info.get("tpm_mean_B", 1))
-
-    fig.update_yaxes(
-        range=[0, penalty_max * 2], row=1, col=3, secondary_y=False  # Double the range
-    )
-
-    fig.update_yaxes(
-        range=[0, tpm_max * 2], row=1, col=3, secondary_y=True  # Double the range
-    )
-
-    fig.update_yaxes(
-        title_text="Penalty / Evidence (-log10)", row=1, col=3, secondary_y=False
-    )
-    fig.update_yaxes(title_text="TPM", row=1, col=3, secondary_y=True, showgrid=False)
-
-    # Add legend
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=10, color=junction_color_a),
-            name="Condition A",
-            showlegend=True,
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=10, color=junction_color_b),
-            name="Condition B",
-            showlegend=True,
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=10, color=territory_unique_color_a),
-            name="Unique Territory A",
-            showlegend=True,
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=10, color=territory_comp_color_a),
-            name="Comparator Territory A",
-            showlegend=True,
-        )
-    )
-
-    return fig
-
-
 def visualize_subset_junctions_only(
     aggregated_data: Dict,
     norm_data: Dict,
@@ -2863,7 +2114,7 @@ def visualize_subset_junctions_only(
     show_individual_samples: bool = True,
 ):
     """
-    Create visualization for subsets WITHOUT territory data, focusing on junction evidence.
+    Create visualization for subsets focusing on junction evidence.
     Features bilateral junction arcs, paired junction violin plots, and metrics panel.
 
     Parameters:
@@ -3262,7 +2513,7 @@ def visualize_subset_junctions_only(
                     col=1,
                 )
 
-    # RIGHT PANEL: Metrics (same as territory version)
+    # RIGHT PANEL: Metrics
     raw_transcripts = pd.DataFrame()
     if "transcripts_long" in norm_data:
         raw_transcripts = norm_data["transcripts_long"][
@@ -3425,7 +2676,7 @@ def visualize_subset_junctions_only(
                 )
 
     # Update layout
-    title_text = f'Junction Analysis (No Territory Data): {subset_info["transcript_id_str"]} with {len(superset_ids)} Superset Partners'
+    title_text = f'Junction Analysis: {subset_info["transcript_id_str"]} with {len(superset_ids)} Superset Partners'
 
     base_height = 400
     transcript_panel_height = max(200, min(400, n_transcripts * 50))
@@ -3591,13 +2842,10 @@ def visualize_subset_junctions_only(
 
 
 def plot_all_subsets_junction_focus(
-    aggregated_data: Dict,
-    raw_data: Dict,
-    show_individual_samples: bool = True,
-    include_territory_subsets: bool = False,
+    aggregated_data: Dict, raw_data: Dict, show_individual_samples: bool = True
 ):
     """
-    Create junction-focused visualizations for subsets, optionally including those with territory data.
+    Create junction-focused visualizations for all subsets.
 
     Parameters:
     -----------
@@ -3607,9 +2855,6 @@ def plot_all_subsets_junction_focus(
         Dictionary from fetch_gene_data_raw
     show_individual_samples : bool
         Whether to show individual sample distributions
-    include_territory_subsets : bool
-        If True, create junction plots even for subsets with territory data
-        If False, only create plots for subsets WITHOUT territory data
 
     Returns:
     --------
@@ -3617,7 +2862,6 @@ def plot_all_subsets_junction_focus(
     """
     df_subset_links = raw_data["subset_links"]
     df_transcripts = aggregated_data["transcripts_agg"]
-    df_territories = aggregated_data.get("territories_agg", pd.DataFrame())
 
     # Get unique subset IDs
     subset_ids = df_subset_links["subset_transcript_id_int"].unique()
@@ -3632,79 +2876,10 @@ def plot_all_subsets_junction_focus(
 
         subset_info = subset_info.iloc[0]
         subset_name = subset_info["transcript_id_str"]
-
-        # Check if subset has territory data
-        has_territory = False
-        if not df_territories.empty:
-            subset_territories = df_territories[
-                (
-                    df_territories.index.get_level_values("transcript_id_int")
-                    == subset_tid
-                )
-                & (df_territories.index.get_level_values("territory_role") == "unique")
-            ]
-            has_territory = not subset_territories.empty
-
-        # Skip if has territory data and we're not including those
-        if has_territory and not include_territory_subsets:
-            print(
-                f"Skipping {subset_name} - has territory data (use territory visualization instead)"
-            )
-            continue
 
         print(f"Creating junction-focused visualization for subset {subset_name}")
 
         fig = visualize_subset_junctions_only(
-            aggregated_data, raw_data, subset_tid, show_individual_samples
-        )
-
-        if fig:
-            figures.append(fig)
-
-    return figures
-
-
-def plot_all_subsets_with_territories(
-    aggregated_data: Dict, raw_data: Dict, show_individual_samples: bool = True
-):
-    """
-    Create territory visualizations for all subsets with their superset partners.
-
-    Parameters:
-    -----------
-    aggregated_data : dict
-        Dictionary from aggregate_replicate_data
-    raw_data : dict
-        Dictionary from fetch_gene_data_raw
-    show_individual_samples : bool
-        Whether to show individual sample distributions
-
-    Returns:
-    --------
-    list of plotly figures
-    """
-    df_subset_links = raw_data["subset_links"]
-    df_transcripts = aggregated_data["transcripts_agg"]
-
-    # Get unique subset IDs
-    subset_ids = df_subset_links["subset_transcript_id_int"].unique()
-
-    figures = []
-
-    for subset_tid in subset_ids:
-        # Check if this subset has significant penalties
-        subset_info = df_transcripts[df_transcripts["transcript_id_int"] == subset_tid]
-        if subset_info.empty:
-            continue
-
-        subset_info = subset_info.iloc[0]
-        subset_name = subset_info["transcript_id_str"]
-
-        print(
-            f"Creating territory visualization for subset {subset_name} with all its supersets"
-        )
-
-        fig = visualize_subset_focused_territories(
             aggregated_data, raw_data, subset_tid, show_individual_samples
         )
 
@@ -4029,11 +3204,9 @@ def get_description(key):
         "annotations": "Base transcript annotations",
         "transcripts_agg": "Aggregated transcript metrics by replicate group",
         "junctions_agg": "Junction read counts aggregated by condition",
-        "territories_agg": "Territory coverage statistics",
         "aggregated_agg": "Gene-level metrics by replicate group",
         "transcripts_long": "Raw transcript data in long format",
         "junctions_long": "Raw junction counts per sample",
-        "territories_long": "Raw territory coverage per sample",
         "subset_links": "Subset-superset transcript relationships",
         "size_factors": "Sample normalization factors",
         "aggregated_long": "Raw gene-level data in long format",
@@ -4403,10 +3576,7 @@ def main():
     # Agg subset-focused junction plots
     if len(norm_data["subset_links"]) > 0:
         junction_figures = plot_all_subsets_junction_focus(
-            aggregated_data,
-            norm_data,
-            show_individual_samples=True,
-            include_territory_subsets=True,
+            aggregated_data, norm_data, show_individual_samples=True
         )
         junction_save_path = (
             f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_junction_plots.html"
@@ -4435,37 +3605,6 @@ def main():
         print(
             "No subsets defined for this gene; skipping subset-focused junction plots."
         )
-
-    # Agg subset-focused territory plots
-    if len(aggregated_data["territories_agg"]) > 1:
-        territory_figures = plot_all_subsets_with_territories(
-            aggregated_data, norm_data, show_individual_samples=True
-        )
-        territory_save_path = (
-            f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_territory_plots.html"
-        )
-        export_multipanel_with_navigation(
-            territory_figures,
-            [fig.layout.title.text for fig in territory_figures],
-            territory_save_path,
-        )
-        print(f"All subset-focused territory plots saved to: {territory_save_path}")
-        if args.save_svg and STATIC_EXPORT_AVAILABLE:
-            export_figures_as_svg_archive(
-                territory_figures,
-                [fig.layout.title.text for fig in territory_figures],
-                f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_territory_plots.zip",
-                raw_data["gene_id"],
-            )
-        if args.save_pdf and HAVE_PYPDF2 and STATIC_EXPORT_AVAILABLE:
-            pdf_save_path = f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_territory_plots.pdf"
-            create_combined_pdf(
-                territory_figures,
-                [fig.layout.title.text for fig in territory_figures],
-                pdf_save_path,
-            )
-    else:
-        print("Not enough subsets with coverage data to create territory plots.")
 
     # 6. Export all data to Excel
     if args.export_excel:
