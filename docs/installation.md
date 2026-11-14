@@ -52,7 +52,7 @@ or, for the pure-Python builder only:
 pip install majec
 ```
 
-Prebuilt majec-core wheels are built for Linux and macOS (x86_64 and arm64) and CPython 3.11, 3.12 and 3.13. Where no wheel matches, pip tries to compile majec-core from source, which needs a Rust toolchain (see [Building majec-core from source](#building-majec-core-from-source)). If that fails, install plain `majec`; results are the same.
+Prebuilt majec-core wheels are built for Linux (x86_64 and aarch64) and macOS on Apple Silicon (arm64), for CPython 3.11, 3.12 and 3.13. Where no wheel matches, pip tries to compile majec-core from source, which needs a Rust toolchain (see [Building majec-core from source](#building-majec-core-from-source)). If that fails, install plain `majec`; results are the same.
 
 ### Extras
 
