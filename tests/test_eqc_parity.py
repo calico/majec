@@ -34,42 +34,57 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-DATA = Path(__file__).parent / 'data'
-BAM = DATA / 'pseudogene_sim_sample01.bam'
-ANNOTATION = DATA / 'pseudogene_sim_annotation.pkl.gz'
-TRUTH = DATA / 'pseudogene_sim_truth.json'
+DATA = Path(__file__).parent / "data"
+BAM = DATA / "pseudogene_sim_sample01.bam"
+ANNOTATION = DATA / "pseudogene_sim_annotation.pkl.gz"
+TRUTH = DATA / "pseudogene_sim_truth.json"
 
-SE_BAM = DATA / 'demo_singleend.bam'
-SE_ANNOTATION = DATA / 'demo_singleend_annotation.pkl.gz'
+SE_BAM = DATA / "demo_singleend.bam"
+SE_ANNOTATION = DATA / "demo_singleend_annotation.pkl.gz"
 
-from tests.eqc_parity_common import (REQUIRED_BRANCHES,  # noqa: E402
-                                     SHARED_STATS, assert_payloads_match)
+from tests.eqc_parity_common import (
+    REQUIRED_BRANCHES,  # noqa: E402
+    SHARED_STATS,
+    assert_payloads_match,
+)
 
-majec_core = pytest.importorskip('majec_core', reason='Rust extension not built')
-pytest.importorskip('pysam', reason='pysam not installed; fallback cannot run')
+majec_core = pytest.importorskip("majec_core", reason="Rust extension not built")
+pytest.importorskip("pysam", reason="pysam not installed; fallback cannot run")
 
 pytestmark = pytest.mark.skipif(
-    not BAM.exists(), reason='fixture missing; run tests/data/make_fixture.py')
+    not BAM.exists(), reason="fixture missing; run tests/data/make_fixture.py"
+)
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def annotation():
-    with gzip.open(ANNOTATION, 'rb') as f:
+    with gzip.open(ANNOTATION, "rb") as f:
         return pickle.load(f)
 
 
 def _run(impl, ann, **overrides):
-    kwargs = dict(strandedness=0, paired_end=True, min_mapq=30,
-                  use_alignment_scoring=False, as_temperature=10.0)
+    kwargs = dict(
+        strandedness=0,
+        paired_end=True,
+        min_mapq=30,
+        use_alignment_scoring=False,
+        as_temperature=10.0,
+    )
     kwargs.update(overrides)
     return impl(
-        str(BAM), ann['exon_index'], ann['junction_unstranded'],
-        ann['string_to_int'], ann['junction_map'],
-        ann['junction_int_to_string'], ann['junction_string_to_int'],
-        sample_name='parity', **kwargs)
+        str(BAM),
+        ann["exon_index"],
+        ann["junction_unstranded"],
+        ann["string_to_int"],
+        ann["junction_map"],
+        ann["junction_int_to_string"],
+        ann["junction_string_to_int"],
+        sample_name="parity",
+        **kwargs,
+    )
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def results(annotation):
     """Both builders, both scoring modes. Four scans, so build them once."""
     from majec.eqc_builder import run_junction_eqc_builder as py_impl
@@ -85,45 +100,50 @@ def results(annotation):
 
 
 SCORING = pytest.mark.parametrize(
-    'scoring', [False, True], ids=['plain', 'as_weighted'])
+    "scoring", [False, True], ids=["plain", "as_weighted"]
+)
 
 
 @SCORING
 def test_unique_mapper_groups_identical(results, scoring):
     """Unique classes are integer read counts, so they must match exactly."""
     rust, py = results[scoring]
-    assert dict(rust['unique_mapper_groups']) == dict(py['unique_mapper_groups'])
+    assert dict(rust["unique_mapper_groups"]) == dict(py["unique_mapper_groups"])
 
 
 @SCORING
 def test_multimapper_classes_identical(results, scoring):
     rust, py = results[scoring]
-    r, p = rust['multimapper_classes'], py['multimapper_classes']
-    assert set(r) == set(p), 'multimapper class membership differs'
+    r, p = rust["multimapper_classes"], py["multimapper_classes"]
+    assert set(r) == set(p), "multimapper class membership differs"
     for key in r:
-        assert r[key] == pytest.approx(p[key], rel=1e-9), f'weight differs for {set(key)}'
+        assert r[key] == pytest.approx(
+            p[key], rel=1e-9
+        ), f"weight differs for {set(key)}"
 
 
 @SCORING
-@pytest.mark.parametrize('field', ['initial_unique_counts',
-                                   'initial_multimapper_counts'])
+@pytest.mark.parametrize(
+    "field", ["initial_unique_counts", "initial_multimapper_counts"]
+)
 def test_count_vectors_match(results, scoring, field):
     rust, py = results[scoring]
-    np.testing.assert_allclose(rust[field].values, py[field].values,
-                               rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(
+        rust[field].values, py[field].values, rtol=1e-9, atol=1e-12
+    )
 
 
 @SCORING
 def test_junction_metrics_identical(results, scoring):
     rust, py = results[scoring]
-    assert rust['junction_metrics'] == py['junction_metrics']
+    assert rust["junction_metrics"] == py["junction_metrics"]
 
 
 @SCORING
-@pytest.mark.parametrize('key', SHARED_STATS)
+@pytest.mark.parametrize("key", SHARED_STATS)
 def test_shared_stats_match(results, scoring, key):
     rust, py = results[scoring]
-    r, p = rust['stats'].get(key), py['stats'].get(key)
+    r, p = rust["stats"].get(key), py["stats"].get(key)
     if isinstance(r, float) or isinstance(p, float):
         assert r == pytest.approx(p, rel=1e-9)
     else:
@@ -131,11 +151,11 @@ def test_shared_stats_match(results, scoring, key):
 
 
 @SCORING
-@pytest.mark.parametrize('branch', REQUIRED_BRANCHES)
+@pytest.mark.parametrize("branch", REQUIRED_BRANCHES)
 def test_fixture_exercises_branch(results, scoring, branch):
     """The fixture must keep reaching every branch, or parity means less."""
     rust, _ = results[scoring]
-    assert rust['stats'].get(branch, 0) > 0, f'{branch} no longer exercised'
+    assert rust["stats"].get(branch, 0) > 0, f"{branch} no longer exercised"
 
 
 @SCORING
@@ -146,9 +166,10 @@ def test_fixture_exercises_low_mapq(results, scoring):
     here; if that clone is ever dropped, this is what notices.
     """
     rust, _ = results[scoring]
-    assert rust['stats'].get('low_mapq_unique', 0) > 0, (
-        'low_mapq_unique no longer exercised - has the crafted MAPQ-10 pair '
-        'been dropped from the fixture?')
+    assert rust["stats"].get("low_mapq_unique", 0) > 0, (
+        "low_mapq_unique no longer exercised - has the crafted MAPQ-10 pair "
+        "been dropped from the fixture?"
+    )
 
 
 def test_both_builders_measure_fragment_lengths(results):
@@ -161,10 +182,10 @@ def test_both_builders_measure_fragment_lengths(results):
     that agreeing on "no measurement at all" cannot pass for parity.
     """
     for side in results[False]:
-        hist = side['stats'].get('fragment_length_hist')
-        assert hist, 'no fragment histogram produced'
-        assert len(hist) > 100, f'only {len(hist)} distinct lengths measured'
-        assert side['stats']['fragment_length_n'] > 1000
+        hist = side["stats"].get("fragment_length_hist")
+        assert hist, "no fragment histogram produced"
+        assert len(hist) > 100, f"only {len(hist)} distinct lengths measured"
+        assert side["stats"]["fragment_length_n"] > 1000
 
 
 def test_fragment_length_is_measured_in_cdna_space(results):
@@ -174,12 +195,13 @@ def test_fragment_length_is_measured_in_cdna_space(results):
     a plain end-minus-start the two would converge. On a spliced library they
     should be far apart.
     """
-    stats = results[False][0]['stats']
-    assert stats['genomic_span_mean'] > 2 * stats['fragment_length_unique_mean'], (
+    stats = results[False][0]["stats"]
+    assert stats["genomic_span_mean"] > 2 * stats["fragment_length_unique_mean"], (
         f"genomic span {stats['genomic_span_mean']:.0f} is not meaningfully "
         f"larger than the spliced length "
         f"{stats['fragment_length_unique_mean']:.0f} - is the projection "
-        f"still removing introns?")
+        f"still removing introns?"
+    )
 
 
 def test_parents_outrank_their_pseudogenes(results, annotation):
@@ -190,21 +212,22 @@ def test_parents_outrank_their_pseudogenes(results, annotation):
     single-digit pseudogene reads, so the parent must come out ahead.
     """
     truth = json.loads(TRUTH.read_text())
-    s2i = annotation['string_to_int']
-    counts = results[False][0]['initial_unique_counts']
+    s2i = annotation["string_to_int"]
+    counts = results[False][0]["initial_unique_counts"]
 
     checked = 0
-    for pair in truth['pairs_meta']:
+    for pair in truth["pairs_meta"]:
         # _resolved because sim_transcripts.fa predates v44 and most parents
         # carry a stale version suffix; make_fixture.py maps them forward.
-        parent, pseudo = pair['parent_tx_resolved'], pair['pseudo_tx_resolved']
+        parent, pseudo = pair["parent_tx_resolved"], pair["pseudo_tx_resolved"]
         if not parent or not pseudo:
             continue
-        assert pair['parent_sim_reads'] > pair['pseudo_sim_reads']
-        assert counts.iloc[s2i[parent]] > counts.iloc[s2i[pseudo]], (
-            f"{pair['parent_name']} should outrank {pair['pseudo_name']}")
+        assert pair["parent_sim_reads"] > pair["pseudo_sim_reads"]
+        assert (
+            counts.iloc[s2i[parent]] > counts.iloc[s2i[pseudo]]
+        ), f"{pair['parent_name']} should outrank {pair['pseudo_name']}"
         checked += 1
-    assert checked == 12, f'expected all 12 pairs, resolved {checked}'
+    assert checked == 12, f"expected all 12 pairs, resolved {checked}"
 
 
 # --------------------------------------------------------------------------
@@ -214,24 +237,34 @@ def test_parents_outrank_their_pseudogenes(results, annotation):
 # --------------------------------------------------------------------------
 
 se_only = pytest.mark.skipif(
-    not SE_BAM.exists(), reason='demo single-end fixture missing')
+    not SE_BAM.exists(), reason="demo single-end fixture missing"
+)
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def se_results():
     from majec.eqc_builder import run_junction_eqc_builder as py_impl
     from majec.eqc_builder_rust import run_junction_eqc_builder as rust_impl
 
-    with gzip.open(SE_ANNOTATION, 'rb') as f:
+    with gzip.open(SE_ANNOTATION, "rb") as f:
         ann = pickle.load(f)
 
     def run(impl, scoring):
         return impl(
-            str(SE_BAM), ann['exon_index'], ann['junction_unstranded'],
-            ann['string_to_int'], ann['junction_map'],
-            ann['junction_int_to_string'], ann['junction_string_to_int'],
-            sample_name='parity_se', strandedness=0, paired_end=False,
-            min_mapq=30, use_alignment_scoring=scoring, as_temperature=10.0)
+            str(SE_BAM),
+            ann["exon_index"],
+            ann["junction_unstranded"],
+            ann["string_to_int"],
+            ann["junction_map"],
+            ann["junction_int_to_string"],
+            ann["junction_string_to_int"],
+            sample_name="parity_se",
+            strandedness=0,
+            paired_end=False,
+            min_mapq=30,
+            use_alignment_scoring=scoring,
+            as_temperature=10.0,
+        )
 
     return {s: (run(rust_impl, s), run(py_impl, s)) for s in (False, True)}
 
@@ -240,7 +273,7 @@ def se_results():
 @SCORING
 def test_single_end_parity(se_results, scoring):
     rust, py = se_results[scoring]
-    assert_payloads_match(rust, py, context='single-end')
+    assert_payloads_match(rust, py, context="single-end")
 
 
 @se_only
@@ -251,18 +284,20 @@ def test_single_end_skips_the_pairing_machinery(se_results):
     for a paired BAM or paired_end=False stopped being honoured - and then the
     module has no single-end coverage while still looking like it does.
     """
-    stats = se_results[False][0]['stats']
-    assert stats['total_reads'] > 0
-    for key in ('paired_reads_processed', 'paired_intersection_empty',
-                'orphaned_mates'):
-        assert stats.get(key, 0) == 0, (
-            f'{key} fired on a single-end run: {stats[key]}')
+    stats = se_results[False][0]["stats"]
+    assert stats["total_reads"] > 0
+    for key in (
+        "paired_reads_processed",
+        "paired_intersection_empty",
+        "orphaned_mates",
+    ):
+        assert stats.get(key, 0) == 0, f"{key} fired on a single-end run: {stats[key]}"
 
 
 @se_only
 def test_single_end_still_refines_on_junctions(se_results):
     """The interesting half of the single-end path must still do work."""
-    stats = se_results[False][0]['stats']
-    assert stats['spliced_reads'] > 0
-    assert stats['junction_refined'] > 0
-    assert stats['exon_refined'] > 0
+    stats = se_results[False][0]["stats"]
+    assert stats["spliced_reads"] > 0
+    assert stats["junction_refined"] > 0
+    assert stats["exon_refined"] > 0

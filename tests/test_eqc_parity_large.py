@@ -41,85 +41,108 @@ from pathlib import Path
 
 import pytest
 
-from tests.eqc_parity_common import (REQUIRED_BRANCHES, SHARED_STATS,
-                                     assert_payloads_match)
+from tests.eqc_parity_common import (
+    REQUIRED_BRANCHES,
+    SHARED_STATS,
+    assert_payloads_match,
+)
 
-BAM = Path(os.environ['MAJEC_PARITY_BAM']) if os.environ.get('MAJEC_PARITY_BAM') else None
-ANNOTATION = (Path(os.environ['MAJEC_PARITY_ANNOTATION'])
-              if os.environ.get('MAJEC_PARITY_ANNOTATION') else None)
+BAM = (
+    Path(os.environ["MAJEC_PARITY_BAM"]) if os.environ.get("MAJEC_PARITY_BAM") else None
+)
+ANNOTATION = (
+    Path(os.environ["MAJEC_PARITY_ANNOTATION"])
+    if os.environ.get("MAJEC_PARITY_ANNOTATION")
+    else None
+)
 
 # MAJEC's convention is 2 for reverse-stranded (dUTP) libraries. The committed
 # fixture runs unstranded, so this tier is also the only parity coverage of the
 # strand-aware branch.
-STRANDEDNESS = int(os.environ.get('MAJEC_PARITY_STRANDEDNESS', 2))
+STRANDEDNESS = int(os.environ.get("MAJEC_PARITY_STRANDEDNESS", 2))
 
-pytest.importorskip('majec_core', reason='Rust extension not built')
-pytest.importorskip('pysam', reason='pysam not installed; fallback cannot run')
+pytest.importorskip("majec_core", reason="Rust extension not built")
+pytest.importorskip("pysam", reason="pysam not installed; fallback cannot run")
 
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
         not (BAM and ANNOTATION and BAM.exists() and ANNOTATION.exists()),
-        reason='set MAJEC_PARITY_BAM and MAJEC_PARITY_ANNOTATION to run this tier'),
+        reason="set MAJEC_PARITY_BAM and MAJEC_PARITY_ANNOTATION to run this tier",
+    ),
 ]
 
 
 def _log(msg):
-    print(f'  {msg}', file=sys.stderr, flush=True)
+    print(f"  {msg}", file=sys.stderr, flush=True)
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def results():
     """Both builders, both scoring modes, on the full BAM. Four scans."""
     from majec.eqc_builder import run_junction_eqc_builder as py_impl
     from majec.eqc_builder_rust import run_junction_eqc_builder as rust_impl
 
     t0 = time.time()
-    with gzip.open(ANNOTATION, 'rb') as f:
+    with gzip.open(ANNOTATION, "rb") as f:
         ann = pickle.load(f)
-    _log(f'annotation: {len(ann["string_to_int"]):,} transcripts, '
-         f'{ann["exon_index"].n_exons:,} exons ({time.time() - t0:.1f}s)')
+    _log(
+        f'annotation: {len(ann["string_to_int"]):,} transcripts, '
+        f'{ann["exon_index"].n_exons:,} exons ({time.time() - t0:.1f}s)'
+    )
 
     def run(impl, scoring):
         return impl(
-            str(BAM), ann['exon_index'], ann['junction_unstranded'],
-            ann['string_to_int'], ann['junction_map'],
-            ann['junction_int_to_string'], ann['junction_string_to_int'],
-            sample_name='parity_large', strandedness=STRANDEDNESS,
-            paired_end=True, min_mapq=30, use_alignment_scoring=scoring,
-            as_temperature=10.0)
+            str(BAM),
+            ann["exon_index"],
+            ann["junction_unstranded"],
+            ann["string_to_int"],
+            ann["junction_map"],
+            ann["junction_int_to_string"],
+            ann["junction_string_to_int"],
+            sample_name="parity_large",
+            strandedness=STRANDEDNESS,
+            paired_end=True,
+            min_mapq=30,
+            use_alignment_scoring=scoring,
+            as_temperature=10.0,
+        )
 
     out = {}
     for scoring in (False, True):
-        mode = 'as_weighted' if scoring else 'plain'
-        for name, impl in (('rust', rust_impl), ('python', py_impl)):
+        mode = "as_weighted" if scoring else "plain"
+        for name, impl in (("rust", rust_impl), ("python", py_impl)):
             t = time.time()
             res = run(impl, scoring)
             dt = max(time.time() - t, 1e-9)
-            n = res['stats']['total_reads']
-            _log(f'{mode:12s} {name:6s} {n:,} reads in {dt:.0f}s '
-                 f'({n / dt / 1000:.0f}K/s)')
+            n = res["stats"]["total_reads"]
+            _log(
+                f"{mode:12s} {name:6s} {n:,} reads in {dt:.0f}s "
+                f"({n / dt / 1000:.0f}K/s)"
+            )
             out[(scoring, name)] = res
     return out
 
 
 SCORING = pytest.mark.parametrize(
-    'scoring', [False, True], ids=['plain', 'as_weighted'])
+    "scoring", [False, True], ids=["plain", "as_weighted"]
+)
 
 
 @SCORING
 def test_builders_agree_at_scale(results, scoring):
-    mode = 'as_weighted' if scoring else 'plain'
-    assert_payloads_match(results[(scoring, 'rust')],
-                          results[(scoring, 'python')], context=mode)
+    mode = "as_weighted" if scoring else "plain"
+    assert_payloads_match(
+        results[(scoring, "rust")], results[(scoring, "python")], context=mode
+    )
 
 
 @SCORING
 def test_scale_exercises_branches(results, scoring):
     """A real BAM should reach at least what the tiny fixture reaches."""
-    stats = results[(scoring, 'rust')]['stats']
+    stats = results[(scoring, "rust")]["stats"]
     missing = [b for b in REQUIRED_BRANCHES if not stats.get(b, 0)]
-    assert not missing, f'branches unexercised on the full BAM: {missing}'
+    assert not missing, f"branches unexercised on the full BAM: {missing}"
 
 
 def test_scale_is_actually_larger(results):
@@ -129,13 +152,15 @@ def test_scale_is_actually_larger(results):
     repointed somewhere small, parity would still pass and the tier would stop
     earning its 15 minutes.
     """
-    stats = results[(False, 'rust')]['stats']
-    assert stats['total_reads'] > 1_000_000, (
+    stats = results[(False, "rust")]["stats"]
+    assert stats["total_reads"] > 1_000_000, (
         f'only {stats["total_reads"]:,} reads - this tier exists to test '
-        'scale the committed fixture cannot reach')
-    assert stats['multimapped'] > 100_000, (
+        "scale the committed fixture cannot reach"
+    )
+    assert stats["multimapped"] > 100_000, (
         f'only {stats["multimapped"]:,} multimappers - the accumulation paths '
-        'are what scale is meant to stress')
+        "are what scale is meant to stress"
+    )
 
 
 def test_both_builders_measure_fragment_lengths(results):
@@ -146,14 +171,16 @@ def test_both_builders_measure_fragment_lengths(results):
     a mean in the low hundreds is expected. A projection bug that leaked
     introns would land in the thousands.
     """
-    for name in ('rust', 'python'):
-        stats = results[(False, name)]['stats']
-        assert stats.get('fragment_length_hist'), f'{name}: no histogram'
-        assert stats['fragment_length_n'] > 1_000_000, (
-            f'{name}: only {stats["fragment_length_n"]:,.0f} pairs measured')
-        assert 100 < stats['fragment_length_capped_mean'] < 600, (
+    for name in ("rust", "python"):
+        stats = results[(False, name)]["stats"]
+        assert stats.get("fragment_length_hist"), f"{name}: no histogram"
+        assert (
+            stats["fragment_length_n"] > 1_000_000
+        ), f'{name}: only {stats["fragment_length_n"]:,.0f} pairs measured'
+        assert 100 < stats["fragment_length_capped_mean"] < 600, (
             f'{name}: capped mean {stats["fragment_length_capped_mean"]:.1f} is '
-            'outside the plausible range for an Illumina library')
+            "outside the plausible range for an Illumina library"
+        )
 
 
 def test_shared_stats_are_all_present(results):
@@ -162,7 +189,7 @@ def test_shared_stats_are_all_present(results):
     assert_payloads_match reads stats with .get(), so a key renamed on both
     sides at once would compare None to None and pass. This is what notices.
     """
-    for name in ('rust', 'python'):
-        stats = results[(False, name)]['stats']
+    for name in ("rust", "python"):
+        stats = results[(False, name)]["stats"]
         missing = [k for k in SHARED_STATS if k not in stats]
-        assert not missing, f'{name} builder no longer reports: {missing}'
+        assert not missing, f"{name} builder no longer reports: {missing}"

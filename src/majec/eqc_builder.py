@@ -28,6 +28,7 @@ except ImportError:
 # Exon interval index — binned approach, no external dependencies
 # ---------------------------------------------------------------------------
 
+
 class ExonIntervalIndex:
     """
     Fast genomic interval lookup using a binned index.
@@ -72,7 +73,7 @@ class ExonIntervalIndex:
         """
         result = set()
 
-        strands = [strand] if strand else ['+', '-']
+        strands = [strand] if strand else ["+", "-"]
         for s in strands:
             key = (chrom, s)
             if key not in self.bins:
@@ -107,7 +108,7 @@ class ExonIntervalIndex:
         For multi-block (spliced) reads, a transcript must pass containment
         for each block independently (different exons can contain different blocks).
         """
-        strands = [strand] if strand else ['+', '-']
+        strands = [strand] if strand else ["+", "-"]
 
         per_block_sets = []
         for start, end in blocks:
@@ -156,7 +157,7 @@ class ExonIntervalIndex:
         otherwise roughly double the size of every annotation file on disk.
         """
         state = self.__dict__.copy()
-        state.pop('_tx_exons', None)
+        state.pop("_tx_exons", None)
         return state
 
     def _build_tx_exons(self):
@@ -186,8 +187,10 @@ class ExonIntervalIndex:
             built[tx_int] = (starts, ends, offsets)
 
         self._tx_exons = built
-        logging.info(f"  Built cDNA offset vectors for {len(built):,} transcripts "
-                     f"({time.time() - t0:.1f}s)")
+        logging.info(
+            f"  Built cDNA offset vectors for {len(built):,} transcripts "
+            f"({time.time() - t0:.1f}s)"
+        )
 
     def spliced_distance(self, tx_int, g_start, g_end):
         """Distance from g_start to g_end along tx_int with introns removed.
@@ -235,8 +238,7 @@ def _summarize_hist(stats, prefix, hist, cap=None):
     Mirrors summarize_hist in the Rust core, including the quantile
     convention: the first length at which the cumulative weight reaches q*n.
     """
-    items = [(length, w) for length, w in hist.items()
-             if cap is None or length <= cap]
+    items = [(length, w) for length, w in hist.items() if cap is None or length <= cap]
     n = math.fsum(w for _, w in items)
     if n <= 0:
         return
@@ -256,18 +258,19 @@ def _summarize_hist(stats, prefix, hist, cap=None):
                 return length
         return lengths[-1]
 
-    stats[f'{prefix}_n'] = n
-    stats[f'{prefix}_mean'] = mean
-    stats[f'{prefix}_sd'] = math.sqrt(var)
-    stats[f'{prefix}_median'] = quantile(0.50)
-    stats[f'{prefix}_p10'] = quantile(0.10)
-    stats[f'{prefix}_p90'] = quantile(0.90)
-    stats[f'{prefix}_p99'] = quantile(0.99)
+    stats[f"{prefix}_n"] = n
+    stats[f"{prefix}_mean"] = mean
+    stats[f"{prefix}_sd"] = math.sqrt(var)
+    stats[f"{prefix}_median"] = quantile(0.50)
+    stats[f"{prefix}_p10"] = quantile(0.10)
+    stats[f"{prefix}_p90"] = quantile(0.90)
+    stats[f"{prefix}_p99"] = quantile(0.99)
 
 
 # ---------------------------------------------------------------------------
 # Index builders — from annotation data, no GTF re-parsing needed
 # ---------------------------------------------------------------------------
+
 
 def build_exon_index_from_annotation(transcript_to_exons, string_to_int):
     """
@@ -289,8 +292,9 @@ def build_exon_index_from_annotation(transcript_to_exons, string_to_int):
         if tx_int is None:
             continue
         for exon in exons:
-            index.add_exon(exon['chr'], exon['start'], exon['end'],
-                           exon['strand'], tx_int)
+            index.add_exon(
+                exon["chr"], exon["start"], exon["end"], exon["strand"], tx_int
+            )
 
     index.finalize()
     logging.info(f"  Exon index built: {index.n_exons:,} exons")
@@ -320,8 +324,8 @@ def build_junction_unstranded_lookup(junction_map, junction_int_to_string):
         else:
             junc_str = junction_int_to_string[junc_int]
         # Strip strand suffix: "chr1:100-200:+" -> "chr1:100-200"
-        unstranded = junc_str.rsplit(':', 1)[0]
-        junction_unstranded[unstranded].update(info['transcripts'])
+        unstranded = junc_str.rsplit(":", 1)[0]
+        junction_unstranded[unstranded].update(info["transcripts"])
 
     result = dict(junction_unstranded)
     logging.info(f"  {len(result):,} unstranded junctions")
@@ -397,20 +401,29 @@ def _infer_read_strand(read, strandedness):
 
     if strandedness == 1:
         if is_read1:
-            return '-' if is_reverse else '+'
+            return "-" if is_reverse else "+"
         else:
-            return '+' if is_reverse else '-'
+            return "+" if is_reverse else "-"
     elif strandedness == 2:
         if is_read1:
-            return '+' if is_reverse else '-'
+            return "+" if is_reverse else "-"
         else:
-            return '-' if is_reverse else '+'
+            return "-" if is_reverse else "+"
     return None
 
 
-def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
-                strandedness=2, paired_end=True, min_mapq=30, max_reads=None,
-                use_alignment_scoring=False, as_temperature=10.0):
+def process_bam(
+    bam_path,
+    exon_index,
+    junction_unstranded,
+    string_to_int,
+    strandedness=2,
+    paired_end=True,
+    min_mapq=30,
+    max_reads=None,
+    use_alignment_scoring=False,
+    as_temperature=10.0,
+):
     """
     Single-pass BAM processing to build junction-aware equivalence classes.
 
@@ -428,41 +441,45 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
             "Install with: mamba install -c bioconda pysam"
         )
 
-    bamfile = pysam.AlignmentFile(bam_path, 'rb')
+    bamfile = pysam.AlignmentFile(bam_path, "rb")
 
     # Unique mapper accumulators (streaming)
     unique_eqc = defaultdict(int)
     unique_counts = defaultdict(float)
 
     # Multimapper accumulators (need to buffer by read name)
-    multi_read_features = defaultdict(set)  # read_name -> union of features (when AS off)
-    multi_read_alignments = defaultdict(list)  # read_name -> [(features, AS)] (when AS on)
+    multi_read_features = defaultdict(
+        set
+    )  # read_name -> union of features (when AS off)
+    multi_read_alignments = defaultdict(
+        list
+    )  # read_name -> [(features, AS)] (when AS on)
 
     # Junction count accumulator
     junction_agg_counts = defaultdict(int)
 
     # Stats
     stats = {
-        'total_reads': 0,
-        'unique_mapped': 0,
-        'multimapped': 0,
-        'unmapped': 0,
-        'low_mapq_unique': 0,
-        'no_feature': 0,
-        'spliced_reads': 0,
-        'junction_refined': 0,
-        'junction_novel': 0,
-        'junction_incompatible': 0,
-        'exon_refined': 0,
-        'exon_incompatible': 0,
-        'unique_eqc_size_1': 0,
-        'paired_reads_processed': 0,
-        'paired_intersection_empty': 0,
-        'orphaned_mates': 0,
+        "total_reads": 0,
+        "unique_mapped": 0,
+        "multimapped": 0,
+        "unmapped": 0,
+        "low_mapq_unique": 0,
+        "no_feature": 0,
+        "spliced_reads": 0,
+        "junction_refined": 0,
+        "junction_novel": 0,
+        "junction_incompatible": 0,
+        "exon_refined": 0,
+        "exon_incompatible": 0,
+        "unique_eqc_size_1": 0,
+        "paired_reads_processed": 0,
+        "paired_intersection_empty": 0,
+        "orphaned_mates": 0,
         # Primaries whose multiplicity could not be read. Rust-side this is the
         # trigger for derive-by-name; here there is no such path, so it exists
         # only to make the degradation visible after the scan.
-        'reads_without_nh': 0,
+        "reads_without_nh": 0,
     }
 
     # For paired-end: buffer mate1 features until mate2 arrives. The genomic
@@ -491,7 +508,7 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
     # Rust path never had.
     for read in bamfile.fetch(until_eof=True):
         if read.is_unmapped:
-            stats['unmapped'] += 1
+            stats["unmapped"] += 1
             continue
 
         if read.is_supplementary:
@@ -500,7 +517,7 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
         is_secondary = read.is_secondary
 
         if not is_secondary:
-            stats['total_reads'] += 1
+            stats["total_reads"] += 1
 
             if not read_length_sampling_done:
                 seq_len = read.query_length
@@ -509,42 +526,44 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                 if len(read_length_samples) >= 10_000:
                     read_length_sampling_done = True
 
-            if max_reads and stats['total_reads'] > max_reads:
+            if max_reads and stats["total_reads"] > max_reads:
                 break
 
-            if stats['total_reads'] % 2_000_000 == 0:
+            if stats["total_reads"] % 2_000_000 == 0:
                 elapsed = time.time() - start_time
-                rate = stats['total_reads'] / elapsed
-                logging.info(f"  {stats['total_reads']/1e6:.0f}M reads, {elapsed:.0f}s "
-                            f"({rate/1000:.0f}K/s), "
-                            f"unique EqC: {len(unique_eqc):,}, "
-                            f"multi buffer: {len(multi_read_features):,}")
+                rate = stats["total_reads"] / elapsed
+                logging.info(
+                    f"  {stats['total_reads']/1e6:.0f}M reads, {elapsed:.0f}s "
+                    f"({rate/1000:.0f}K/s), "
+                    f"unique EqC: {len(unique_eqc):,}, "
+                    f"multi buffer: {len(multi_read_features):,}"
+                )
 
         # Determine if unique or multimapper via NH tag
         try:
-            nh = read.get_tag('NH')
+            nh = read.get_tag("NH")
         except KeyError:
             nh = 1  # assume unique if no NH tag
             # Counted on primaries only, so the total is comparable to
             # stats['total_reads'] without secondaries inflating it.
             if not is_secondary:
-                stats['reads_without_nh'] += 1
+                stats["reads_without_nh"] += 1
 
-        is_unique = (nh == 1)
+        is_unique = nh == 1
 
         if is_secondary and is_unique:
             continue
 
         if use_alignment_scoring or not is_unique:
             try:
-                as_score = read.get_tag('AS')
+                as_score = read.get_tag("AS")
             except KeyError:
                 as_score = 0
         else:
             as_score = 0
 
         try:
-            hi_tag = read.get_tag('HI')
+            hi_tag = read.get_tag("HI")
         except KeyError:
             hi_tag = 0
 
@@ -561,17 +580,19 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
         splice_junctions = _get_splice_junctions(read)
 
         if splice_junctions:
-            stats['spliced_reads'] += 1
+            stats["spliced_reads"] += 1
 
         # Query exon overlap (inclusion — broad candidate set)
         exon_overlap_txs = exon_index.query_blocks(chrom, aligned_blocks, tx_strand)
 
         if not exon_overlap_txs:
-            stats['no_feature'] += 1
+            stats["no_feature"] += 1
             continue
 
         # Exon containment filtering (exclusion — stricter than overlap)
-        contained_txs = exon_index.query_blocks_contained(chrom, aligned_blocks, tx_strand)
+        contained_txs = exon_index.query_blocks_contained(
+            chrom, aligned_blocks, tx_strand
+        )
         has_containment = bool(contained_txs)
 
         # Query junction compatibility
@@ -585,7 +606,7 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
             if junc_sets:
                 junction_compatible_txs = set.intersection(*junc_sets)
             else:
-                stats['junction_novel'] += 1
+                stats["junction_novel"] += 1
 
         # Refined assignment: try containment ∩ junctions first, then fallbacks
         if junction_compatible_txs is not None:
@@ -596,49 +617,49 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                     if len(triple) < len(exon_overlap_txs):
                         junc_only = exon_overlap_txs & junction_compatible_txs
                         if len(junc_only) < len(exon_overlap_txs):
-                            stats['junction_refined'] += 1
+                            stats["junction_refined"] += 1
                         if len(triple) < len(junc_only):
-                            stats['exon_refined'] += 1
+                            stats["exon_refined"] += 1
                     features = triple
                 else:
                     # Triple empty — try overlap ∩ junctions
                     junc_refined = exon_overlap_txs & junction_compatible_txs
                     if junc_refined:
                         if len(junc_refined) < len(exon_overlap_txs):
-                            stats['junction_refined'] += 1
-                        stats['exon_incompatible'] += 1
+                            stats["junction_refined"] += 1
+                        stats["exon_incompatible"] += 1
                         features = junc_refined
                     else:
                         # Try overlap ∩ containment
                         cont_refined = exon_overlap_txs & contained_txs
                         if cont_refined:
-                            stats['junction_incompatible'] += 1
+                            stats["junction_incompatible"] += 1
                             if len(cont_refined) < len(exon_overlap_txs):
-                                stats['exon_refined'] += 1
+                                stats["exon_refined"] += 1
                             features = cont_refined
                         else:
-                            stats['junction_incompatible'] += 1
-                            stats['exon_incompatible'] += 1
+                            stats["junction_incompatible"] += 1
+                            stats["exon_incompatible"] += 1
                             features = exon_overlap_txs
             else:
                 # No containment candidates — junction-only refinement
                 junc_refined = exon_overlap_txs & junction_compatible_txs
                 if junc_refined:
                     if len(junc_refined) < len(exon_overlap_txs):
-                        stats['junction_refined'] += 1
+                        stats["junction_refined"] += 1
                     features = junc_refined
                 else:
-                    stats['junction_incompatible'] += 1
+                    stats["junction_incompatible"] += 1
                     features = exon_overlap_txs
         elif has_containment:
             # No junctions — containment-only refinement
             cont_refined = exon_overlap_txs & contained_txs
             if cont_refined:
                 if len(cont_refined) < len(exon_overlap_txs):
-                    stats['exon_refined'] += 1
+                    stats["exon_refined"] += 1
                 features = cont_refined
             else:
-                stats['exon_incompatible'] += 1
+                stats["exon_incompatible"] += 1
                 features = exon_overlap_txs
         else:
             # No containment, no junctions — overlap only (fallback)
@@ -658,8 +679,14 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
             read_name = read.query_name
             mate_key = (read_name, hi_tag)
             if mate_key in mate_buffer:
-                (mate_features, mate_is_unique, mate_as,
-                 mate_chrom, mate_lo, mate_hi) = mate_buffer.pop(mate_key)
+                (
+                    mate_features,
+                    mate_is_unique,
+                    mate_as,
+                    mate_chrom,
+                    mate_lo,
+                    mate_hi,
+                ) = mate_buffer.pop(mate_key)
                 combined = features & mate_features
                 if combined:
                     features = combined
@@ -668,22 +695,28 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                     # Count pairs, not alignment records — same convention as
                     # paired_reads_processed below, and as the Rust builder.
                     if not is_secondary:
-                        stats['paired_intersection_empty'] += 1
+                        stats["paired_intersection_empty"] += 1
                 is_unique = is_unique and mate_is_unique
                 as_score = as_score + mate_as
                 if not is_secondary:
-                    stats['paired_reads_processed'] += 1
+                    stats["paired_reads_processed"] += 1
                 if mate_chrom == chrom:
                     pair_span = (min(mate_lo, read_lo), max(mate_hi, read_hi))
             else:
-                mate_buffer[mate_key] = (features, is_unique, as_score,
-                                         chrom, read_lo, read_hi)
+                mate_buffer[mate_key] = (
+                    features,
+                    is_unique,
+                    as_score,
+                    chrom,
+                    read_lo,
+                    read_hi,
+                )
                 continue
 
         # Route to unique or multi accumulator
         if is_unique:
             if read.mapping_quality < min_mapq:
-                stats['low_mapq_unique'] += 1
+                stats["low_mapq_unique"] += 1
                 continue
 
             if pair_span is not None:
@@ -723,7 +756,7 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                     else:
                         frag_span_not_in_exons += 1
 
-            stats['unique_mapped'] += 1
+            stats["unique_mapped"] += 1
             features_tuple = tuple(sorted(features))
 
             unique_eqc[features_tuple] += 1
@@ -733,10 +766,10 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                 unique_counts[f] += fraction
 
             if len(features) == 1:
-                stats['unique_eqc_size_1'] += 1
+                stats["unique_eqc_size_1"] += 1
         else:
             if not is_secondary:
-                stats['multimapped'] += 1
+                stats["multimapped"] += 1
             read_name = read.query_name
             if use_alignment_scoring:
                 multi_read_alignments[read_name].append((features, as_score))
@@ -747,19 +780,25 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
 
     # Process orphaned mates (mate never found — count them solo)
     if paired_end and mate_buffer:
-        stats['orphaned_mates'] = len(mate_buffer)
+        stats["orphaned_mates"] = len(mate_buffer)
         logging.info(f"  Processing {len(mate_buffer):,} orphaned mates...")
-        for (read_name, _hi), (features, orphan_is_unique, orphan_as,
-                               _chrom, _lo, _hi_pos) in mate_buffer.items():
+        for (read_name, _hi), (
+            features,
+            orphan_is_unique,
+            orphan_as,
+            _chrom,
+            _lo,
+            _hi_pos,
+        ) in mate_buffer.items():
             features_tuple = tuple(sorted(features))
             if orphan_is_unique:
                 unique_eqc[features_tuple] += 1
                 fraction = 1.0 / len(features)
                 for f in features:
                     unique_counts[f] += fraction
-                stats['unique_mapped'] += 1
+                stats["unique_mapped"] += 1
                 if len(features) == 1:
-                    stats['unique_eqc_size_1'] += 1
+                    stats["unique_eqc_size_1"] += 1
             else:
                 if use_alignment_scoring:
                     multi_read_alignments[read_name].append((features, orphan_as))
@@ -768,8 +807,10 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
         del mate_buffer
 
     elapsed = time.time() - start_time
-    logging.info(f"  BAM scan complete: {stats['total_reads']:,} reads in {elapsed:.0f}s "
-                f"({stats['total_reads']/elapsed/1000:.0f}K/s)")
+    logging.info(
+        f"  BAM scan complete: {stats['total_reads']:,} reads in {elapsed:.0f}s "
+        f"({stats['total_reads']/elapsed/1000:.0f}K/s)"
+    )
 
     # NH is the only thing this builder has to decide multiplicity with, and
     # minimap2 never writes it. Absent NH every read reads as unique and every
@@ -780,27 +821,30 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
     #
     # Thresholded rather than fired on the first missing tag: a stray record
     # without NH is not the same condition as an aligner that never emits one.
-    if stats['reads_without_nh'] > 0.01 * max(stats['total_reads'], 1):
-        frac = stats['reads_without_nh'] / max(stats['total_reads'], 1)
+    if stats["reads_without_nh"] > 0.01 * max(stats["total_reads"], 1):
+        frac = stats["reads_without_nh"] / max(stats["total_reads"], 1)
         logging.warning(
             f"  {stats['reads_without_nh']:,} primary alignments ({frac:.0%}) carry "
             "no NH tag. Every one was counted as a unique mapper and their secondary "
             "alignments were discarded, so the multimapper EM has nothing to resolve. "
             "The usual cause is a long-read aligner such as minimap2. Install "
             "majec_core and pass --derive_multiplicity on to recover multiplicity "
-            "from the read name instead.")
+            "from the read name instead."
+        )
 
     # Compute median read length from sampled reads
     if read_length_samples:
         read_length_samples.sort()
-        stats['median_read_length'] = read_length_samples[len(read_length_samples) // 2]
+        stats["median_read_length"] = read_length_samples[len(read_length_samples) // 2]
 
     # Build multimapper equivalence classes
     multi_eqc = defaultdict(float)
     multi_counts = defaultdict(float)
 
     if use_alignment_scoring:
-        logging.info(f"  Building AS-weighted multimapper EqCs from {len(multi_read_alignments):,} reads...")
+        logging.info(
+            f"  Building AS-weighted multimapper EqCs from {len(multi_read_alignments):,} reads..."
+        )
         for read_name, alignments in multi_read_alignments.items():
             if not alignments:
                 continue
@@ -813,7 +857,9 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                     multi_counts[f] += fraction
             else:
                 max_as = max(s for _, s in alignments)
-                weights = [math.exp((s - max_as) / as_temperature) for _, s in alignments]
+                weights = [
+                    math.exp((s - max_as) / as_temperature) for _, s in alignments
+                ]
                 total_weight = sum(weights)
                 for i, (feats, _) in enumerate(alignments):
                     w = weights[i] / total_weight
@@ -824,7 +870,9 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                         multi_counts[f] += fraction
         del multi_read_alignments
     else:
-        logging.info(f"  Building multimapper EqCs from {len(multi_read_features):,} reads...")
+        logging.info(
+            f"  Building multimapper EqCs from {len(multi_read_features):,} reads..."
+        )
         for read_name, feature_set in multi_read_features.items():
             features_tuple = tuple(sorted(feature_set))
             multi_eqc[features_tuple] += 1.0
@@ -833,36 +881,42 @@ def process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
                 multi_counts[f] += fraction
         del multi_read_features
 
-    stats['unique_eqc_count'] = len(unique_eqc)
-    stats['multi_eqc_count'] = len(multi_eqc)
-    stats['total_unique_reads_in_eqc'] = sum(unique_eqc.values())
-    stats['total_multi_reads_in_eqc'] = sum(multi_eqc.values())
+    stats["unique_eqc_count"] = len(unique_eqc)
+    stats["multi_eqc_count"] = len(multi_eqc)
+    stats["total_unique_reads_in_eqc"] = sum(unique_eqc.values())
+    stats["total_multi_reads_in_eqc"] = sum(multi_eqc.values())
 
     # Fragment length. Same keys, same order of derivation as the Rust core's
     # BamStats::to_dict, so a consumer cannot tell which parser produced them.
     # Absent entirely on a single-end library, where nothing is measurable.
     if frag_hist:
-        stats['fragment_length_hist'] = dict(frag_hist)
-        _summarize_hist(stats, 'fragment_length', frag_hist)
-        _summarize_hist(stats, 'fragment_length_capped', frag_hist, cap=FRAG_CAP)
+        stats["fragment_length_hist"] = dict(frag_hist)
+        _summarize_hist(stats, "fragment_length", frag_hist)
+        _summarize_hist(stats, "fragment_length_capped", frag_hist, cap=FRAG_CAP)
     if frag_hist_unique:
-        _summarize_hist(stats, 'fragment_length_unique', frag_hist_unique)
+        _summarize_hist(stats, "fragment_length_unique", frag_hist_unique)
     if genomic_span_hist:
-        _summarize_hist(stats, 'genomic_span', genomic_span_hist)
-    stats['fragment_span_not_in_exons'] = frag_span_not_in_exons
+        _summarize_hist(stats, "genomic_span", genomic_span_hist)
+    stats["fragment_span_not_in_exons"] = frag_span_not_in_exons
 
-    return (dict(unique_eqc), dict(unique_counts),
-            dict(multi_eqc), dict(multi_counts),
-            dict(junction_agg_counts), stats)
+    return (
+        dict(unique_eqc),
+        dict(unique_counts),
+        dict(multi_eqc),
+        dict(multi_counts),
+        dict(junction_agg_counts),
+        stats,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Cache adapter functions — convert raw EqC data to pipeline format
 # ---------------------------------------------------------------------------
 
-def build_junction_metrics_from_counts(junction_counts, junction_map,
-                                       junction_int_to_string,
-                                       junction_string_to_int):
+
+def build_junction_metrics_from_counts(
+    junction_counts, junction_map, junction_int_to_string, junction_string_to_int
+):
     """
     Build pipeline-compatible junction_metrics from aggregated junction_counts
     (unstranded key -> count).
@@ -870,14 +924,16 @@ def build_junction_metrics_from_counts(junction_counts, junction_map,
     Replicates the logic of apply_junction_evidence() in junctions.py but works
     from aggregated counts instead of per-line .jcounts data.
     """
-    junction_metrics = defaultdict(lambda: {
-        'junction_read_count': 0,
-        'unique_junction_reads': 0,
-        'shared_junction_reads': 0,
-        'observed_junctions': {},
-        'n_unique_junctions': 0,
-        'n_shared_junctions': 0
-    })
+    junction_metrics = defaultdict(
+        lambda: {
+            "junction_read_count": 0,
+            "unique_junction_reads": 0,
+            "shared_junction_reads": 0,
+            "observed_junctions": {},
+            "n_unique_junctions": 0,
+            "n_shared_junctions": 0,
+        }
+    )
 
     matched = 0
     unmatched = 0
@@ -888,31 +944,31 @@ def build_junction_metrics_from_counts(junction_counts, junction_map,
 
         # Try both stranded versions
         found = False
-        for strand in ['+', '-']:
+        for strand in ["+", "-"]:
             stranded_key = f"{unstranded_key}:{strand}"
             junction_id = junction_string_to_int.get(stranded_key, -1)
 
             if junction_id != -1 and junction_id in junction_map:
                 info = junction_map[junction_id]
-                n_transcripts = info.get('n_transcripts', 1)
+                n_transcripts = info.get("n_transcripts", 1)
 
-                for transcript in info['transcripts']:
+                for transcript in info["transcripts"]:
                     metrics = junction_metrics[transcript]
-                    metrics['junction_read_count'] += count
+                    metrics["junction_read_count"] += count
 
                     if n_transcripts == 1:
-                        metrics['unique_junction_reads'] += count
+                        metrics["unique_junction_reads"] += count
                     else:
-                        metrics['shared_junction_reads'] += count
+                        metrics["shared_junction_reads"] += count
 
-                    if junction_id not in metrics['observed_junctions']:
-                        metrics['observed_junctions'][junction_id] = 0
+                    if junction_id not in metrics["observed_junctions"]:
+                        metrics["observed_junctions"][junction_id] = 0
                         if n_transcripts == 1:
-                            metrics['n_unique_junctions'] += 1
+                            metrics["n_unique_junctions"] += 1
                         else:
-                            metrics['n_shared_junctions'] += 1
+                            metrics["n_shared_junctions"] += 1
 
-                    metrics['observed_junctions'][junction_id] += count
+                    metrics["observed_junctions"][junction_id] += count
 
                 found = True
                 matched += 1
@@ -921,7 +977,9 @@ def build_junction_metrics_from_counts(junction_counts, junction_map,
         if not found:
             unmatched += 1
 
-    logging.info(f"  Junction metrics: {matched:,} matched, {unmatched:,} unmatched junctions")
+    logging.info(
+        f"  Junction metrics: {matched:,} matched, {unmatched:,} unmatched junctions"
+    )
     logging.info(f"  Built metrics for {len(junction_metrics):,} transcripts")
 
     return dict(junction_metrics)
@@ -968,12 +1026,22 @@ def build_multimapper_counts(multi_eqc, n_features):
 # High-level entry point
 # ---------------------------------------------------------------------------
 
-def run_junction_eqc_builder(bam_path, exon_index, junction_unstranded,
-                              string_to_int, junction_map,
-                              junction_int_to_string, junction_string_to_int,
-                              strandedness=2, paired_end=True, min_mapq=30,
-                              sample_name=None,
-                              use_alignment_scoring=False, as_temperature=10.0):
+
+def run_junction_eqc_builder(
+    bam_path,
+    exon_index,
+    junction_unstranded,
+    string_to_int,
+    junction_map,
+    junction_int_to_string,
+    junction_string_to_int,
+    strandedness=2,
+    paired_end=True,
+    min_mapq=30,
+    sample_name=None,
+    use_alignment_scoring=False,
+    as_temperature=10.0,
+):
     """
     High-level entry point: BAM → standard pipeline payload.
 
@@ -1007,23 +1075,32 @@ def run_junction_eqc_builder(bam_path, exon_index, junction_unstranded,
     logging.info(f"{log_prefix}Starting junction-aware EqC builder on {bam_path}")
 
     if use_alignment_scoring:
-        logging.info(f"{log_prefix}AS-weighted multimapper scoring enabled (tau={as_temperature})")
+        logging.info(
+            f"{log_prefix}AS-weighted multimapper scoring enabled (tau={as_temperature})"
+        )
 
     # 1. Single-pass BAM scan
-    unique_eqc, unique_counts, multi_eqc, multi_counts, junction_counts, stats = \
-        process_bam(bam_path, exon_index, junction_unstranded, string_to_int,
-                    strandedness=strandedness, paired_end=paired_end,
-                    min_mapq=min_mapq,
-                    use_alignment_scoring=use_alignment_scoring,
-                    as_temperature=as_temperature)
+    unique_eqc, unique_counts, multi_eqc, multi_counts, junction_counts, stats = (
+        process_bam(
+            bam_path,
+            exon_index,
+            junction_unstranded,
+            string_to_int,
+            strandedness=strandedness,
+            paired_end=paired_end,
+            min_mapq=min_mapq,
+            use_alignment_scoring=use_alignment_scoring,
+            as_temperature=as_temperature,
+        )
+    )
 
     n_features = len(string_to_int)
 
     # 2. Build junction_metrics from aggregated junction counts
     logging.info(f"{log_prefix}Building junction metrics...")
     junction_metrics = build_junction_metrics_from_counts(
-        junction_counts, junction_map, junction_int_to_string,
-        junction_string_to_int)
+        junction_counts, junction_map, junction_int_to_string, junction_string_to_int
+    )
 
     # 3. Build initial unique counts as Series
     initial_unique_counts = build_initial_counts(unique_counts, n_features)
@@ -1031,19 +1108,22 @@ def run_junction_eqc_builder(bam_path, exon_index, junction_unstranded,
     # 4. Build multimapper data
     multimapper_classes = convert_multi_groups_to_frozenset(multi_eqc)
     initial_multimapper_counts = build_multimapper_counts(
-        multimapper_classes, n_features)
+        multimapper_classes, n_features
+    )
 
-    logging.info(f"{log_prefix}EqC builder complete: "
-                f"{len(unique_eqc):,} unique classes ({stats['total_unique_reads_in_eqc']:,} reads), "
-                f"{len(multimapper_classes):,} multi classes ({stats['total_multi_reads_in_eqc']:,} reads), "
-                f"{len(junction_metrics):,} transcripts with junction metrics")
+    logging.info(
+        f"{log_prefix}EqC builder complete: "
+        f"{len(unique_eqc):,} unique classes ({stats['total_unique_reads_in_eqc']:,} reads), "
+        f"{len(multimapper_classes):,} multi classes ({stats['total_multi_reads_in_eqc']:,} reads), "
+        f"{len(junction_metrics):,} transcripts with junction metrics"
+    )
 
     return {
-        'unique_mapper_groups': unique_eqc,
-        'initial_unique_counts': initial_unique_counts,
-        'multimapper_classes': multimapper_classes,
-        'initial_multimapper_counts': initial_multimapper_counts,
-        'junction_metrics': junction_metrics,
-        'has_multimapper_data': True,
-        'stats': stats,
+        "unique_mapper_groups": unique_eqc,
+        "initial_unique_counts": initial_unique_counts,
+        "multimapper_classes": multimapper_classes,
+        "initial_multimapper_counts": initial_multimapper_counts,
+        "junction_metrics": junction_metrics,
+        "has_multimapper_data": True,
+        "stats": stats,
     }

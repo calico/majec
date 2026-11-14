@@ -13,7 +13,7 @@ from majec.utils.pipeline_utils import (
 
 def _eff(lengths, frag_mean, frag_sd):
     """Convenience wrapper returning a Series indexed by transcript name."""
-    s = pd.Series(lengths, index=[f't{i}' for i in range(len(lengths))])
+    s = pd.Series(lengths, index=[f"t{i}" for i in range(len(lengths))])
     return calculate_effective_length_distributional(s, frag_mean, frag_sd)
 
 
@@ -29,8 +29,13 @@ def _conditional_efflen(L, frag_mean, frag_sd):
     min_len = int(max(1, frag_mean - 4 * frag_sd))
     max_len = int(frag_mean + 4 * frag_sd)
     d = np.arange(min_len, max_len + 1)
-    p = truncnorm.pdf(d, (min_len - frag_mean) / frag_sd,
-                      (max_len - frag_mean) / frag_sd, loc=frag_mean, scale=frag_sd)
+    p = truncnorm.pdf(
+        d,
+        (min_len - frag_mean) / frag_sd,
+        (max_len - frag_mean) / frag_sd,
+        loc=frag_mean,
+        scale=frag_sd,
+    )
     p /= p.sum()
     producible = d <= L
     if not producible.any():
@@ -41,6 +46,7 @@ def _conditional_efflen(L, frag_mean, frag_sd):
 # =============================================================================
 # calculate_effective_length_distributional
 # =============================================================================
+
 
 class TestEffectiveLengthDistributional:
     """The result must be the CONDITIONAL effective length L - E[d | d <= L] + 1.
@@ -69,7 +75,7 @@ class TestEffectiveLengthDistributional:
         result = _eff([5000], 205, 85)
         assert result.iloc[0] == pytest.approx(5000 - 205 + 1, abs=10.0)
 
-    @pytest.mark.parametrize('L', [150, 250, 400, 1000, 10000])
+    @pytest.mark.parametrize("L", [150, 250, 400, 1000, 10000])
     def test_matches_conditional_reference(self, L):
         """Must equal the conditional length, not the bare numerator
         sum_d P(d) * max(L - d + 1, 0)."""
@@ -82,7 +88,7 @@ class TestEffectiveLengthDistributional:
         diffs = np.diff(result.values)
         assert (diffs >= -1e-9).all()
 
-    @pytest.mark.parametrize('frag_sd', [85, 40, 20])
+    @pytest.mark.parametrize("frag_sd", [85, 40, 20])
     def test_monotonic_and_bounded_across_sd(self, frag_sd):
         """The three properties must hold at every fragment SD, not just 85."""
         lengths = [1.0, 10, 45, 46, 100, 150, 250, 400, 1000, 10000]
@@ -128,9 +134,9 @@ class TestEffectiveLengthDistributional:
         assert (result.values <= np.array(lengths, dtype=float)).all()
 
     def test_index_and_shape_preserved(self):
-        s = pd.Series([150, 800, 2400], index=['ENST1', 'ENST2', 'ENST3'])
+        s = pd.Series([150, 800, 2400], index=["ENST1", "ENST2", "ENST3"])
         result = calculate_effective_length_distributional(s, 205, 85)
-        assert list(result.index) == ['ENST1', 'ENST2', 'ENST3']
+        assert list(result.index) == ["ENST1", "ENST2", "ENST3"]
         assert len(result) == 3
         # The caller's Series must not be mutated in place.
         assert s.tolist() == [150, 800, 2400]
@@ -167,8 +173,9 @@ class TestEffectiveLengthDistributional:
 # calculate_effective_length_empirical
 # =============================================================================
 
+
 def _eff_emp(lengths, hist):
-    s = pd.Series(lengths, index=[f't{i}' for i in range(len(lengths))])
+    s = pd.Series(lengths, index=[f"t{i}" for i in range(len(lengths))])
     return calculate_effective_length_empirical(s, hist)
 
 
@@ -180,8 +187,13 @@ def _truncnorm_hist(frag_mean, frag_sd):
     min_len = int(max(1, frag_mean - 4 * frag_sd))
     max_len = int(frag_mean + 4 * frag_sd)
     d = np.arange(min_len, max_len + 1)
-    p = truncnorm.pdf(d, (min_len - frag_mean) / frag_sd,
-                      (max_len - frag_mean) / frag_sd, loc=frag_mean, scale=frag_sd)
+    p = truncnorm.pdf(
+        d,
+        (min_len - frag_mean) / frag_sd,
+        (max_len - frag_mean) / frag_sd,
+        loc=frag_mean,
+        scale=frag_sd,
+    )
     return {int(k): float(v) for k, v in zip(d, p)}
 
 
@@ -203,10 +215,12 @@ class TestEffectiveLengthEmpirical:
 
     # A deliberately skewed histogram: this is the shape the parser actually
     # produces (mean well above the median), and the reason the function exists.
-    SKEWED = {int(d): float(np.exp(-((np.log(d) - np.log(240)) ** 2) / (2 * 0.45 ** 2)) / d)
-              for d in range(40, 1400)}
+    SKEWED = {
+        int(d): float(np.exp(-((np.log(d) - np.log(240)) ** 2) / (2 * 0.45**2)) / d)
+        for d in range(40, 1400)
+    }
 
-    @pytest.mark.parametrize('L', [39, 40, 41, 150, 300, 1399, 1400, 5000])
+    @pytest.mark.parametrize("L", [39, 40, 41, 150, 300, 1399, 1400, 5000])
     def test_matches_conditional_reference(self, L):
         got = _eff_emp([float(L)], self.SKEWED).iloc[0]
         assert got == pytest.approx(_conditional_efflen_hist(L, self.SKEWED))
@@ -274,26 +288,28 @@ class TestEffectiveLengthEmpirical:
         assert abs(full - cut) / cut < 0.01
 
     def test_empty_histogram_falls_back_to_annotated(self):
-        s = pd.Series([150.0, 2000.0], index=['a', 'b'])
+        s = pd.Series([150.0, 2000.0], index=["a", "b"])
         result = calculate_effective_length_empirical(s, {})
         assert result.tolist() == [150.0, 2000.0]
 
     def test_zero_weight_histogram_falls_back_to_annotated(self):
-        s = pd.Series([150.0, 2000.0], index=['a', 'b'])
+        s = pd.Series([150.0, 2000.0], index=["a", "b"])
         result = calculate_effective_length_empirical(s, {200: 0.0, 300: 0.0})
         assert result.tolist() == [150.0, 2000.0]
 
     def test_index_preserved_and_input_not_mutated(self):
-        s = pd.Series([150, 800, 2400], index=['ENST1', 'ENST2', 'ENST3'])
+        s = pd.Series([150, 800, 2400], index=["ENST1", "ENST2", "ENST3"])
         result = calculate_effective_length_empirical(s, self.SKEWED)
-        assert list(result.index) == ['ENST1', 'ENST2', 'ENST3']
+        assert list(result.index) == ["ENST1", "ENST2", "ENST3"]
         assert s.tolist() == [150, 800, 2400]
 
     def test_integer_input_lengths(self):
         s = pd.Series(np.array([150, 3000], dtype=np.int64), index=[0, 1])
         result = calculate_effective_length_empirical(s, self.SKEWED)
         assert result.dtype == np.float64
-        assert result.iloc[0] == pytest.approx(_conditional_efflen_hist(150, self.SKEWED))
+        assert result.iloc[0] == pytest.approx(
+            _conditional_efflen_hist(150, self.SKEWED)
+        )
 
 
 class TestFragmentHistMoments:

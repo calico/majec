@@ -10,4 +10,4 @@ passing. Putting src/ at the front of sys.path takes the ambiguity out.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent / "src"))

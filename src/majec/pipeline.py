@@ -21,18 +21,19 @@ import gzip
 from pathlib import Path
 from datetime import datetime, timezone
 
-
 # --- Helper Functions ---
 
 from majec.utils.confidence_utils import (
-     calculate_confidence_metrics,
-     calculate_differential_confidence_parallel, 
-     track_assignment_entropy_parallel,
-     process_and_save_sample_outputs,
-     analyze_competition_patterns,
-     decode_transcript_ids,
- )
-from majec.utils.group_confidence import run_group_confidence_from_pipeline_parallel_optimized
+    calculate_confidence_metrics,
+    calculate_differential_confidence_parallel,
+    track_assignment_entropy_parallel,
+    process_and_save_sample_outputs,
+    analyze_competition_patterns,
+    decode_transcript_ids,
+)
+from majec.utils.group_confidence import (
+    run_group_confidence_from_pipeline_parallel_optimized,
+)
 
 from majec.utils.junctions import (
     calculate_junction_confidence_metrics_vectorized,
@@ -43,14 +44,21 @@ from majec.utils.junctions import (
 
 from majec import __version__ as MAJEC_VERSION
 from majec.utils.cache import PipelineCache
-from majec.eqc_builder_rust import run_junction_eqc_builder, RUST_AVAILABLE, builder_provenance
+from majec.eqc_builder_rust import (
+    run_junction_eqc_builder,
+    RUST_AVAILABLE,
+    builder_provenance,
+)
 
 from majec.utils.pipeline_utils import (
     setup_logging,
-    standard_em_step,grouped_momentum_acceleration,
+    standard_em_step,
+    grouped_momentum_acceleration,
     adaptive_convergence_check,
-    get_sample_name_from_bam,calculate_effective_length_distributional,
-    calculate_effective_length_empirical,fragment_hist_moments
+    get_sample_name_from_bam,
+    calculate_effective_length_distributional,
+    calculate_effective_length_empirical,
+    fragment_hist_moments,
 )
 
 # Global variables for multiprocessing workers
@@ -70,12 +78,23 @@ _te_map = None
 _exon_index = None
 _junction_unstranded = None
 
-def init_worker(int_to_string_map, string_to_int_map,
-                junction_int_to_string_map, junction_string_to_int_map,
-                junction_map, transcript_junction_order, transcript_info,
-                subset_relationships, splice_competitor_map,
-                transcript_expected_junctions, gene_map, te_map,
-                exon_index, junction_unstranded):
+
+def init_worker(
+    int_to_string_map,
+    string_to_int_map,
+    junction_int_to_string_map,
+    junction_string_to_int_map,
+    junction_map,
+    transcript_junction_order,
+    transcript_info,
+    subset_relationships,
+    splice_competitor_map,
+    transcript_expected_junctions,
+    gene_map,
+    te_map,
+    exon_index,
+    junction_unstranded,
+):
     """Initialize worker process with ALL read-only mappings."""
     global _int_to_string_map, _string_to_int_map
     global _junction_int_to_string_map, _junction_string_to_int_map
@@ -99,12 +118,18 @@ def init_worker(int_to_string_map, string_to_int_map,
     _exon_index = exon_index
     _junction_unstranded = junction_unstranded
 
-def init_worker_downstream(int_to_string_map, string_to_int_map, 
-                           gene_map, te_map, 
-                           junction_int_to_string_map, transcript_info): 
+
+def init_worker_downstream(
+    int_to_string_map,
+    string_to_int_map,
+    gene_map,
+    te_map,
+    junction_int_to_string_map,
+    transcript_info,
+):
     """Initialize worker with data for EM, confidence, and final report writing."""
     global _int_to_string_map, _string_to_int_map, _gene_map, _te_map, _junction_int_to_string_map, _transcript_info
-    
+
     _int_to_string_map = int_to_string_map
     _string_to_int_map = string_to_int_map
     _gene_map = gene_map
@@ -116,18 +141,20 @@ def init_worker_downstream(int_to_string_map, string_to_int_map,
 #####. string -> int & int -> string mapping functions #####
 def _aggregate_by_map(df, id_map):
     """Aggregate a DataFrame's rows using a LocusID -> AggregateID mapping."""
-    mask = df.index.isin(id_map['LocusID'].values)
+    mask = df.index.isin(id_map["LocusID"].values)
     if mask.sum() == 0:
         return pd.DataFrame()
     subset = df[mask].copy()
-    locus_to_agg = id_map.set_index('LocusID')['AggregateID'].to_dict()
+    locus_to_agg = id_map.set_index("LocusID")["AggregateID"].to_dict()
     subset.index = subset.index.map(locus_to_agg)
     return subset.groupby(level=0).sum()
 
 
 def _aggregate_genes_and_tes(df, gene_map, te_map):
     """Aggregate a DataFrame by gene and TE maps, returning combined result."""
-    genes_agg = _aggregate_by_map(df, gene_map) if gene_map is not None else pd.DataFrame()
+    genes_agg = (
+        _aggregate_by_map(df, gene_map) if gene_map is not None else pd.DataFrame()
+    )
     tes_agg = _aggregate_by_map(df, te_map) if te_map is not None else pd.DataFrame()
 
     parts = [p for p in [genes_agg, tes_agg] if not p.empty]
@@ -148,27 +175,31 @@ def write_te_locus_coordinates(transcript_info, int_to_string, te_map, prefix):
     if te_map is None or transcript_info is None:
         return None
 
-    subfamily_by_locus = dict(zip(te_map['LocusID'], te_map['AggregateID']))
+    subfamily_by_locus = dict(zip(te_map["LocusID"], te_map["AggregateID"]))
     rows = []
     for tid_int, info in transcript_info.items():
-        if info.get('feature_type') != 'te':
+        if info.get("feature_type") != "te":
             continue
-        rows.append({
-            'locus_id': int_to_string[tid_int],
-            'chr': info.get('chr'),
-            'start': info.get('start'),
-            'end': info.get('end'),
-            'strand': info.get('strand'),
-            'subfamily': subfamily_by_locus.get(tid_int, ''),
-        })
+        rows.append(
+            {
+                "locus_id": int_to_string[tid_int],
+                "chr": info.get("chr"),
+                "start": info.get("start"),
+                "end": info.get("end"),
+                "strand": info.get("strand"),
+                "subfamily": subfamily_by_locus.get(tid_int, ""),
+            }
+        )
 
     if not rows:
         return None
 
     path = f"{prefix}_TE_locus_coordinates.tsv"
-    coord_df = pd.DataFrame(rows, columns=['locus_id', 'chr', 'start', 'end', 'strand', 'subfamily'])
-    coord_df = coord_df.sort_values(['chr', 'start', 'end']).reset_index(drop=True)
-    coord_df.to_csv(path, sep='\t', index=False)
+    coord_df = pd.DataFrame(
+        rows, columns=["locus_id", "chr", "start", "end", "strand", "subfamily"]
+    )
+    coord_df = coord_df.sort_values(["chr", "start", "end"]).reset_index(drop=True)
+    coord_df.to_csv(path, sep="\t", index=False)
     logging.info(f"TE locus coordinates saved to: {path} ({len(coord_df)} loci)")
     return path
 
@@ -194,80 +225,96 @@ def load_preprocessed_annotations(annotation_file):
     Now includes TSL data and expected junctions.
     """
     logging.info(f"Loading preprocessed annotations from {annotation_file}")
-    
+
     if not os.path.exists(annotation_file):
         raise FileNotFoundError(f"Annotation file not found: {annotation_file}")
-    
-    with gzip.open(annotation_file, 'rb') as f:
+
+    with gzip.open(annotation_file, "rb") as f:
         annotation_data = pickle.load(f)
-    
-    metadata = annotation_data['metadata']
+
+    metadata = annotation_data["metadata"]
     logging.info(f"  Loaded annotations for {metadata['n_transcripts']:,} transcripts")
     logging.info(f"  Gene GTF: {os.path.basename(metadata['gene_gtf'])}")
-    if metadata['te_gtf']:
+    if metadata["te_gtf"]:
         logging.info(f"  TE GTF: {os.path.basename(metadata['te_gtf'])}")
     logging.info(f"  Created on: {metadata['creation_date']}")
-    
+
     # Check for TSL data
-    if metadata.get('has_tsl_data', False):
+    if metadata.get("has_tsl_data", False):
         logging.info(f"  TSL data available: {metadata.get('tsl_distribution', {})}")
     else:
         logging.info(f"  No TSL data in annotation")
-    
+
     # Convert gene_map and te_map back to DataFrames
-    gene_map = pd.DataFrame({
-        'LocusID': annotation_data['gene_map']['LocusID'],
-        'AggregateID': annotation_data['gene_map']['AggregateID']
-    })
-    
+    gene_map = pd.DataFrame(
+        {
+            "LocusID": annotation_data["gene_map"]["LocusID"],
+            "AggregateID": annotation_data["gene_map"]["AggregateID"],
+        }
+    )
+
     te_map = None
-    if annotation_data['te_map'] is not None:
-        te_map = pd.DataFrame({
-            'LocusID': annotation_data['te_map']['LocusID'],
-            'AggregateID': annotation_data['te_map']['AggregateID']
-        })
-    
+    if annotation_data["te_map"] is not None:
+        te_map = pd.DataFrame(
+            {
+                "LocusID": annotation_data["te_map"]["LocusID"],
+                "AggregateID": annotation_data["te_map"]["AggregateID"],
+            }
+        )
+
     # Format junction map for compatibility
     junction_map = None
-    if 'junction_map' in annotation_data:
+    if "junction_map" in annotation_data:
         junction_map = {
-            'junction_map': annotation_data['junction_map'],
-            'transcript_unique_junctions': annotation_data.get('transcript_unique_junctions', {}),
-            'metadata': {
-                'total_junctions': metadata.get('n_junctions', 0),
-                'unique_junctions': metadata.get('n_unique_junctions', 0)
-            }
+            "junction_map": annotation_data["junction_map"],
+            "transcript_unique_junctions": annotation_data.get(
+                "transcript_unique_junctions", {}
+            ),
+            "metadata": {
+                "total_junctions": metadata.get("n_junctions", 0),
+                "unique_junctions": metadata.get("n_unique_junctions", 0),
+            },
         }
-        logging.info(f"  Junction map loaded: {metadata['n_junctions']:,} junctions "
-                    f"({metadata['n_unique_junctions']:,} unique)")
-    
-    
+        logging.info(
+            f"  Junction map loaded: {metadata['n_junctions']:,} junctions "
+            f"({metadata['n_unique_junctions']:,} unique)"
+        )
+
     # Load EqC builder data (precomputed exon index + junction lookup)
-    exon_index = annotation_data.get('exon_index')
-    junction_unstranded = annotation_data.get('junction_unstranded')
+    exon_index = annotation_data.get("exon_index")
+    junction_unstranded = annotation_data.get("junction_unstranded")
 
     if exon_index is None or junction_unstranded is None:
-        logging.warning("Annotation lacks precomputed EqC builder data (exon_index, junction_unstranded).")
+        logging.warning(
+            "Annotation lacks precomputed EqC builder data (exon_index, junction_unstranded)."
+        )
         logging.warning("Building from annotation data at runtime...")
-        from majec.eqc_builder import build_exon_index_from_annotation, build_junction_unstranded_lookup
+        from majec.eqc_builder import (
+            build_exon_index_from_annotation,
+            build_junction_unstranded_lookup,
+        )
+
         # Need transcript_to_exons which isn't stored — fall back to building from GTF
         if exon_index is None:
-            logging.warning("  ExonIntervalIndex not in annotation. "
-                            "Please regenerate annotation with majec_precompute_annotations to avoid GTF re-parsing.")
+            logging.warning(
+                "  ExonIntervalIndex not in annotation. "
+                "Please regenerate annotation with majec_precompute_annotations to avoid GTF re-parsing."
+            )
             # Build from GTF at runtime (slow fallback)
             from majec.eqc_builder import ExonIntervalIndex
             import gzip as gzip_mod
-            gtf_path = metadata['gene_gtf']
+
+            gtf_path = metadata["gene_gtf"]
             logging.info(f"  Building exon index from GTF: {gtf_path}")
             exon_index = ExonIntervalIndex()
-            string_to_int_local = annotation_data['string_to_int']
-            opener = gzip_mod.open if gtf_path.endswith('.gz') else open
-            with opener(gtf_path, 'rt') as f_gtf:
+            string_to_int_local = annotation_data["string_to_int"]
+            opener = gzip_mod.open if gtf_path.endswith(".gz") else open
+            with opener(gtf_path, "rt") as f_gtf:
                 for line in f_gtf:
-                    if line.startswith('#'):
+                    if line.startswith("#"):
                         continue
-                    parts = line.split('\t')
-                    if len(parts) < 9 or parts[2] != 'exon':
+                    parts = line.split("\t")
+                    if len(parts) < 9 or parts[2] != "exon":
                         continue
                     attrs = parts[8]
                     tid_start = attrs.find('transcript_id "')
@@ -277,19 +324,24 @@ def load_preprocessed_annotations(annotation_file):
                     tid_end = attrs.find('"', tid_start)
                     transcript_id = attrs[tid_start:tid_end]
                     if transcript_id in string_to_int_local:
-                        exon_index.add_exon(parts[0], int(parts[3]), int(parts[4]),
-                                            parts[6], string_to_int_local[transcript_id])
+                        exon_index.add_exon(
+                            parts[0],
+                            int(parts[3]),
+                            int(parts[4]),
+                            parts[6],
+                            string_to_int_local[transcript_id],
+                        )
             # Also try TE GTF if present
-            if metadata.get('te_gtf'):
-                te_gtf_path = metadata['te_gtf']
+            if metadata.get("te_gtf"):
+                te_gtf_path = metadata["te_gtf"]
                 logging.info(f"  Also building from TE GTF: {te_gtf_path}")
-                te_opener = gzip_mod.open if te_gtf_path.endswith('.gz') else open
-                with te_opener(te_gtf_path, 'rt') as f_te:
+                te_opener = gzip_mod.open if te_gtf_path.endswith(".gz") else open
+                with te_opener(te_gtf_path, "rt") as f_te:
                     for line in f_te:
-                        if line.startswith('#'):
+                        if line.startswith("#"):
                             continue
-                        parts = line.split('\t')
-                        if len(parts) < 9 or parts[2] != 'exon':
+                        parts = line.split("\t")
+                        if len(parts) < 9 or parts[2] != "exon":
                             continue
                         attrs = parts[8]
                         tid_start = attrs.find('transcript_id "')
@@ -299,33 +351,40 @@ def load_preprocessed_annotations(annotation_file):
                         tid_end = attrs.find('"', tid_start)
                         transcript_id = attrs[tid_start:tid_end]
                         if transcript_id in string_to_int_local:
-                            exon_index.add_exon(parts[0], int(parts[3]), int(parts[4]),
-                                                parts[6], string_to_int_local[transcript_id])
+                            exon_index.add_exon(
+                                parts[0],
+                                int(parts[3]),
+                                int(parts[4]),
+                                parts[6],
+                                string_to_int_local[transcript_id],
+                            )
             exon_index.finalize()
             logging.info(f"  Built exon index: {exon_index.n_exons:,} exons")
 
         if junction_unstranded is None:
             junction_unstranded = build_junction_unstranded_lookup(
-                annotation_data['junction_map'],
-                annotation_data['junction_int_to_string'])
+                annotation_data["junction_map"],
+                annotation_data["junction_int_to_string"],
+            )
 
     return (
-        annotation_data['string_to_int'],
-        annotation_data['int_to_string'],
-        annotation_data['junction_string_to_int'],
-        annotation_data['junction_int_to_string'],
+        annotation_data["string_to_int"],
+        annotation_data["int_to_string"],
+        annotation_data["junction_string_to_int"],
+        annotation_data["junction_int_to_string"],
         gene_map,
         te_map,
         junction_map,
-        annotation_data['transcript_junction_order'],
-        annotation_data.get('transcript_info', {}),
-        annotation_data.get('transcript_expected_junctions', {}),
-        annotation_data.get('subset_relationships', {}),
-        annotation_data.get('junction_competitors', {}),
+        annotation_data["transcript_junction_order"],
+        annotation_data.get("transcript_info", {}),
+        annotation_data.get("transcript_expected_junctions", {}),
+        annotation_data.get("subset_relationships", {}),
+        annotation_data.get("junction_competitors", {}),
         metadata,
         exon_index,
-        junction_unstranded
+        junction_unstranded,
     )
+
 
 def parse_cDNA_fragment_stats_json(stats_file_path):
     """
@@ -336,23 +395,25 @@ def parse_cDNA_fragment_stats_json(stats_file_path):
         A tuple of (mean, std_dev) if successful, otherwise (None, None).
     """
     try:
-        with open(stats_file_path, 'r') as f:
+        with open(stats_file_path, "r") as f:
             data = json.load(f)
-        
+
         # Directly access the required keys from the parsed JSON dictionary
         mean = data["mean"]
         std_dev = data["std_dev"]
-        
+
         return mean, std_dev
-        
+
     except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError) as e:
         # This robustly handles missing files, corrupted JSON, or missing keys.
         # We log a warning but don't crash the whole pipeline.
         logging.warning(f"Could not read or parse stats file '{stats_file_path}': {e}")
         return None, None
 
-def prepare_length_vector(sample_name, bam_path, args, transcript_info, active_transcript_ids,
-                          frag_hist=None):
+
+def prepare_length_vector(
+    sample_name, bam_path, args, transcript_info, active_transcript_ids, frag_hist=None
+):
     """
     Prepares the length normalization vector for a single sample,
     operating ONLY on the active set of transcripts.
@@ -363,36 +424,37 @@ def prepare_length_vector(sample_name, bam_path, args, transcript_info, active_t
     older runs stay reproducible.
     """
     # Create a Series of annotated lengths ONLY for the active transcripts
-    
+
     logging.info(f"[{sample_name}] getting transcript lengths.")
     all_transcript_lengths = {
-    tid: info.get('transcript_length', 1) 
-    for tid, info in transcript_info.items()
+        tid: info.get("transcript_length", 1) for tid, info in transcript_info.items()
     }
-    
+
     logging.info(f"[{sample_name}] getting active lengths.")
     active_lengths_map = {
-    tid: all_transcript_lengths[tid]
-    for tid in active_transcript_ids
-    if tid in all_transcript_lengths
+        tid: all_transcript_lengths[tid]
+        for tid in active_transcript_ids
+        if tid in all_transcript_lengths
     }
-    
+
     annotated_lengths = pd.Series(active_lengths_map)
-    
+
     # Return variable with the fallback value
     length_vector = annotated_lengths
-    
+
     # Try to get a more accurate effective length.  An explicit CLI source wins
     # over the measured histogram so a run can be reproduced against the old
     # numbers; without one, the histogram is used.
     frag_mean, frag_sd = None, None
     if args.frag_stats_dir:
         if frag_hist:
-            logging.warning(f"[{sample_name}] --frag_stats_dir overrides the fragment distribution "
-                            f"measured during the BAM scan. Those JSONs come from tools/"
-                            f"fragment_lengths.py, which reads genomic TLEN and so inflates the "
-                            f"spread of any library with introns; drop the flag to use the "
-                            f"measured distribution instead.")
+            logging.warning(
+                f"[{sample_name}] --frag_stats_dir overrides the fragment distribution "
+                f"measured during the BAM scan. Those JSONs come from tools/"
+                f"fragment_lengths.py, which reads genomic TLEN and so inflates the "
+                f"spread of any library with introns; drop the flag to use the "
+                f"measured distribution instead."
+            )
         logging.info(f"[{sample_name}] getting accurate effective lengths...")
         bam_basename = os.path.basename(bam_path)
         stats_filename = f"{bam_basename.rsplit('.', 1)[0]}_cDNA_frag_stats.json"
@@ -400,14 +462,16 @@ def prepare_length_vector(sample_name, bam_path, args, transcript_info, active_t
         try:
             if not os.path.exists(stats_file_path):
                 raise FileNotFoundError(f"Required file not found: {stats_file_path}")
-            
+
             # Parse the correctly-identified stats file
             frag_mean, frag_sd = parse_cDNA_fragment_stats_json(stats_file_path)
         except FileNotFoundError as e:
             logging.error(f"ERROR: {e}")
-            logging.warning(f"[{sample_name}] Could not find stats file. Falling back to "
-                            f"{'the measured fragment distribution' if frag_hist else 'annotated lengths'}.")
-        
+            logging.warning(
+                f"[{sample_name}] Could not find stats file. Falling back to "
+                f"{'the measured fragment distribution' if frag_hist else 'annotated lengths'}."
+            )
+
     elif args.mean_fragment_length:
         # This simpler case doesn't need the map, but won't provide an SD
         frag_mean = args.mean_fragment_length
@@ -416,114 +480,169 @@ def prepare_length_vector(sample_name, bam_path, args, transcript_info, active_t
     # 3. If we found data, calculate effective length and overwrite the fallback vector
     if frag_mean is not None:
         if frag_sd is not None:
-            logging.info(f"[{sample_name}] Using fragment dist (mean={frag_mean:.2f}, sd={frag_sd:.2f}) for effective lengths.")
+            logging.info(
+                f"[{sample_name}] Using fragment dist (mean={frag_mean:.2f}, sd={frag_sd:.2f}) for effective lengths."
+            )
         else:
-            logging.info(f"[{sample_name}] Using fragment mean ({frag_mean:.2f}) for effective lengths.")
-            
+            logging.info(
+                f"[{sample_name}] Using fragment mean ({frag_mean:.2f}) for effective lengths."
+            )
+
         # Call the high-accuracy distributional function
         length_vector = calculate_effective_length_distributional(
-            annotated_lengths, # Pass the small, active set
-            frag_mean,
-            frag_sd
+            annotated_lengths, frag_mean, frag_sd  # Pass the small, active set
         )
     elif frag_hist:
         n_frag, hist_mean, hist_sd = fragment_hist_moments(frag_hist)
-        logging.info(f"[{sample_name}] Using measured fragment distribution "
-                     f"(n={n_frag:,.0f} pairs, mean={hist_mean:.2f}, sd={hist_sd:.2f}, "
-                     f"{len(frag_hist):,} bins) for effective lengths.")
-        length_vector = calculate_effective_length_empirical(annotated_lengths, frag_hist)
+        logging.info(
+            f"[{sample_name}] Using measured fragment distribution "
+            f"(n={n_frag:,.0f} pairs, mean={hist_mean:.2f}, sd={hist_sd:.2f}, "
+            f"{len(frag_hist):,} bins) for effective lengths."
+        )
+        length_vector = calculate_effective_length_empirical(
+            annotated_lengths, frag_hist
+        )
     else:
-        logging.info(f"[{sample_name}] No fragment length info found. Using annotated transcript lengths for normalization.")
+        logging.info(
+            f"[{sample_name}] No fragment length info found. Using annotated transcript lengths for normalization."
+        )
         # No action needed, length_vector already holds the correct fallback
 
     # 4. Final check for safety and return
     length_vector[length_vector <= 1] = 1
     return length_vector
 
+
 def _build_pipeline_context(annotation_metadata):
     """Build pipeline context dict from global worker state."""
     return {
-        'junction_map': _junction_map,
-        'junction_string_to_int': _junction_string_to_int_map,
-        'junction_int_to_string': _junction_int_to_string_map,
-        'transcript_junction_order': _transcript_junction_order,
-        'transcript_info': _transcript_info,
-        'subset_relationships': _subset_relationships,
-        'splice_competitor_map': _splice_competitor_map,
-        'transcript_expected_junctions': _transcript_expected_junctions,
-        'gene_map': _gene_map,
-        'te_map': _te_map,
-        'exon_index': _exon_index,
-        'junction_unstranded': _junction_unstranded,
-        'annotation_metadata': annotation_metadata
+        "junction_map": _junction_map,
+        "junction_string_to_int": _junction_string_to_int_map,
+        "junction_int_to_string": _junction_int_to_string_map,
+        "transcript_junction_order": _transcript_junction_order,
+        "transcript_info": _transcript_info,
+        "subset_relationships": _subset_relationships,
+        "splice_competitor_map": _splice_competitor_map,
+        "transcript_expected_junctions": _transcript_expected_junctions,
+        "gene_map": _gene_map,
+        "te_map": _te_map,
+        "exon_index": _exon_index,
+        "junction_unstranded": _junction_unstranded,
+        "annotation_metadata": annotation_metadata,
     }
 
 
-def _apply_priors_if_needed(sample_name, initial_counts, junction_evidence, junction_metrics,
-                            pipeline_context, special_feature_counts_series, args):
+def _apply_priors_if_needed(
+    sample_name,
+    initial_counts,
+    junction_evidence,
+    junction_metrics,
+    pipeline_context,
+    special_feature_counts_series,
+    args,
+):
     """Apply junction-informed priors if any evidence/penalty flags are active."""
     if junction_evidence or args.use_tsl_penalty or args.use_junction_completeness:
         return create_junction_informed_priors_encoded_with_penalties(
-            sample_name, initial_counts, junction_evidence, junction_metrics,
-            pipeline_context, special_feature_counts_series, args)
+            sample_name,
+            initial_counts,
+            junction_evidence,
+            junction_metrics,
+            pipeline_context,
+            special_feature_counts_series,
+            args,
+        )
     return initial_counts
 
 
-def _process_sample_cached(sample_name, bam_path, cache_manager, cache_path,
-                           pipeline_context, shared_cache, args):
+def _process_sample_cached(
+    sample_name,
+    bam_path,
+    cache_manager,
+    cache_path,
+    pipeline_context,
+    shared_cache,
+    args,
+):
     """Process a sample using cached EqC results."""
     cache_data = cache_manager.load_sample_cache(cache_path)
     logging.info(f"[{sample_name}] Using cached EqC results")
 
-    initial_unique_counts = cache_data['initial_unique_counts']
-    unique_mapper_groups = cache_data['unique_mapper_groups']
-    cached_junction_metrics = cache_data.get('junction_metrics', {})
+    initial_unique_counts = cache_data["initial_unique_counts"]
+    unique_mapper_groups = cache_data["unique_mapper_groups"]
+    cached_junction_metrics = cache_data.get("junction_metrics", {})
     special_feature_counts_series = pd.Series({})
     special_feature_counts_series.name = sample_name
 
     junction_evidence = {}
     if cached_junction_metrics:
-        logging.info(f"[{sample_name}] Calculating junction evidence from {len(cached_junction_metrics)} cached metrics")
+        logging.info(
+            f"[{sample_name}] Calculating junction evidence from {len(cached_junction_metrics)} cached metrics"
+        )
         junction_evidence = calculate_junction_evidence_from_metrics(
-            cached_junction_metrics, _junction_map['junction_map'],
+            cached_junction_metrics,
+            _junction_map["junction_map"],
             junction_weight=args.junction_weight,
-            decay_exponent=args.junction_decay_exponent)
-        logging.info(f"[{sample_name}] Calculated evidence for {len(junction_evidence)} transcripts")
+            decay_exponent=args.junction_decay_exponent,
+        )
+        logging.info(
+            f"[{sample_name}] Calculated evidence for {len(junction_evidence)} transcripts"
+        )
 
     modified_unique_counts = _apply_priors_if_needed(
-        sample_name, initial_unique_counts, junction_evidence, cached_junction_metrics,
-        pipeline_context, special_feature_counts_series, args)
+        sample_name,
+        initial_unique_counts,
+        junction_evidence,
+        cached_junction_metrics,
+        pipeline_context,
+        special_feature_counts_series,
+        args,
+    )
 
     shared_cache[sample_name] = {
-        'initial_unique_counts': initial_unique_counts,
-        'modified_unique_counts': modified_unique_counts,
-        'unique_mapper_groups': unique_mapper_groups,
-        'junction_evidence': junction_evidence,
-        'bam_path': bam_path,
-        'junction_metrics': cache_data.get('junction_metrics', {}),
-        'has_multimapper_data': cache_data.get('has_multimapper_data', False),
-        'initial_multimapper_counts': cache_data.get('initial_multimapper_counts'),
-        'multimapper_classes': cache_data.get('multimapper_classes'),
+        "initial_unique_counts": initial_unique_counts,
+        "modified_unique_counts": modified_unique_counts,
+        "unique_mapper_groups": unique_mapper_groups,
+        "junction_evidence": junction_evidence,
+        "bam_path": bam_path,
+        "junction_metrics": cache_data.get("junction_metrics", {}),
+        "has_multimapper_data": cache_data.get("has_multimapper_data", False),
+        "initial_multimapper_counts": cache_data.get("initial_multimapper_counts"),
+        "multimapper_classes": cache_data.get("multimapper_classes"),
         # Both are absent from caches written before the parser measured them;
         # the consumers of each report the fallback rather than taking it silently.
-        'median_read_length': cache_data.get('median_read_length'),
-        'fragment_length_hist': cache_data.get('fragment_length_hist'),
+        "median_read_length": cache_data.get("median_read_length"),
+        "fragment_length_hist": cache_data.get("fragment_length_hist"),
     }
 
-    logging.info(f"[{sample_name}] Storing junction_metrics with "
-                 f"{len(shared_cache[sample_name]['junction_metrics'])} entries in shared cache")
-    return (modified_unique_counts[modified_unique_counts > 0].values, sample_name, cache_path)
+    logging.info(
+        f"[{sample_name}] Storing junction_metrics with "
+        f"{len(shared_cache[sample_name]['junction_metrics'])} entries in shared cache"
+    )
+    return (
+        modified_unique_counts[modified_unique_counts > 0].values,
+        sample_name,
+        cache_path,
+    )
 
 
 # --derive_multiplicity is a tri-state, not a flag: "off" has to be expressible
 # so a no-NH BAM can still be run the old way for comparison, and that is not the
 # same statement as "decide for me".
-_DERIVE_MULTIPLICITY = {'auto': None, 'on': True, 'off': False}
+_DERIVE_MULTIPLICITY = {"auto": None, "on": True, "off": False}
 
 
-def _process_sample_fresh(sample_name, bam_path, pipeline_context,
-                          shared_cache, cache_manager, annotation_metadata,
-                          threads_per_worker, temp_dir, args):
+def _process_sample_fresh(
+    sample_name,
+    bam_path,
+    pipeline_context,
+    shared_cache,
+    cache_manager,
+    annotation_metadata,
+    threads_per_worker,
+    temp_dir,
+    args,
+):
     """Process a sample from scratch using the junction-aware EqC builder."""
     sample_start_time = time.time()
     cache_path = None
@@ -537,36 +656,40 @@ def _process_sample_fresh(sample_name, bam_path, pipeline_context,
         exon_index=_exon_index,
         junction_unstranded=_junction_unstranded,
         string_to_int=_string_to_int_map,
-        junction_map=_junction_map['junction_map'],
+        junction_map=_junction_map["junction_map"],
         junction_int_to_string=_junction_int_to_string_map,
         junction_string_to_int=_junction_string_to_int_map,
         strandedness=args.strandedness,
         paired_end=args.paired_end,
         min_mapq=30,
         sample_name=sample_name,
-        use_alignment_scoring=getattr(args, 'use_alignment_scoring', False),
-        as_temperature=getattr(args, 'as_temperature', 10.0),
+        use_alignment_scoring=getattr(args, "use_alignment_scoring", False),
+        as_temperature=getattr(args, "as_temperature", 10.0),
         derive_multiplicity=_DERIVE_MULTIPLICITY[
-            getattr(args, 'derive_multiplicity', 'auto')],
-        lr_score_ratio=getattr(args, 'lr_score_ratio', 0.0),
-        lr_min_mapq=getattr(args, 'lr_min_mapq', None))
+            getattr(args, "derive_multiplicity", "auto")
+        ],
+        lr_score_ratio=getattr(args, "lr_score_ratio", 0.0),
+        lr_min_mapq=getattr(args, "lr_min_mapq", None),
+    )
 
-    initial_unique_counts = eqc_result['initial_unique_counts']
-    unique_mapper_groups = eqc_result['unique_mapper_groups']
-    junction_metrics = eqc_result['junction_metrics']
+    initial_unique_counts = eqc_result["initial_unique_counts"]
+    unique_mapper_groups = eqc_result["unique_mapper_groups"]
+    junction_metrics = eqc_result["junction_metrics"]
 
     # Extract median read length from EqC builder stats (Rust samples first 10K reads)
-    median_read_length = eqc_result.get('stats', {}).get('median_read_length', None)
+    median_read_length = eqc_result.get("stats", {}).get("median_read_length", None)
 
     # Fragment length distribution measured in cDNA space during the same scan,
     # {length: weight}.  Consumed by prepare_length_vector for TPM effective
     # lengths; empty for single-end libraries.
-    fragment_length_hist = eqc_result.get('stats', {}).get('fragment_length_hist', None)
+    fragment_length_hist = eqc_result.get("stats", {}).get("fragment_length_hist", None)
 
     eqc_elapsed = time.time() - eqc_start
     logging.info(f"  [{sample_name}] EqC builder completed in {eqc_elapsed:.1f}s")
-    logging.info(f"  [{sample_name}] Found {len(unique_mapper_groups):,} unique equivalence groups, "
-                f"{len(eqc_result['multimapper_classes']):,} multi groups")
+    logging.info(
+        f"  [{sample_name}] Found {len(unique_mapper_groups):,} unique equivalence groups, "
+        f"{len(eqc_result['multimapper_classes']):,} multi groups"
+    )
 
     special_feature_counts_series = pd.Series({})
     special_feature_counts_series.name = sample_name
@@ -577,53 +700,82 @@ def _process_sample_fresh(sample_name, bam_path, pipeline_context,
 
     if junction_metrics:
         junction_evidence = calculate_junction_evidence_from_metrics(
-            junction_metrics, _junction_map['junction_map'],
+            junction_metrics,
+            _junction_map["junction_map"],
             junction_weight=args.junction_weight,
-            decay_exponent=args.junction_decay_exponent)
-        logging.info(f"[{sample_name}] Calculated evidence for {len(junction_evidence)} transcripts")
+            decay_exponent=args.junction_decay_exponent,
+        )
+        logging.info(
+            f"[{sample_name}] Calculated evidence for {len(junction_evidence)} transcripts"
+        )
 
         modified_unique_counts = _apply_priors_if_needed(
-            sample_name, initial_unique_counts, junction_evidence, junction_metrics,
-            pipeline_context, special_feature_counts_series, args)
+            sample_name,
+            initial_unique_counts,
+            junction_evidence,
+            junction_metrics,
+            pipeline_context,
+            special_feature_counts_series,
+            args,
+        )
 
     # Save to disk cache — now includes multimapper data from the start
     if not args.read_only_cache and cache_manager:
-        cache_key, key_factors = cache_manager.get_cache_key(bam_path, annotation_metadata, args)
+        cache_key, key_factors = cache_manager.get_cache_key(
+            bam_path, annotation_metadata, args
+        )
         cache_path = cache_manager.get_sample_cache_path(sample_name, cache_key)
-        cache_manager.save_sample_cache(sample_name, cache_key, {
-            'initial_unique_counts': initial_unique_counts,
-            'unique_mapper_groups': unique_mapper_groups,
-            'special_feature_counts': {},
-            'junction_metrics': junction_metrics,
-            'has_multimapper_data': True,
-            'multimapper_classes': dict(eqc_result['multimapper_classes']),
-            'initial_multimapper_counts': eqc_result['initial_multimapper_counts'],
-            'median_read_length': median_read_length,
-            'fragment_length_hist': fragment_length_hist,
-        }, key_factors)
+        cache_manager.save_sample_cache(
+            sample_name,
+            cache_key,
+            {
+                "initial_unique_counts": initial_unique_counts,
+                "unique_mapper_groups": unique_mapper_groups,
+                "special_feature_counts": {},
+                "junction_metrics": junction_metrics,
+                "has_multimapper_data": True,
+                "multimapper_classes": dict(eqc_result["multimapper_classes"]),
+                "initial_multimapper_counts": eqc_result["initial_multimapper_counts"],
+                "median_read_length": median_read_length,
+                "fragment_length_hist": fragment_length_hist,
+            },
+            key_factors,
+        )
 
     shared_cache[sample_name] = {
-        'initial_unique_counts': initial_unique_counts,
-        'modified_unique_counts': modified_unique_counts,
-        'unique_mapper_groups': unique_mapper_groups,
-        'junction_evidence': junction_evidence,
-        'bam_path': bam_path,
-        'junction_metrics': junction_metrics,
-        'has_multimapper_data': True,
-        'initial_multimapper_counts': eqc_result['initial_multimapper_counts'],
-        'multimapper_classes': eqc_result['multimapper_classes'],
-        'median_read_length': median_read_length,
-        'fragment_length_hist': fragment_length_hist,
+        "initial_unique_counts": initial_unique_counts,
+        "modified_unique_counts": modified_unique_counts,
+        "unique_mapper_groups": unique_mapper_groups,
+        "junction_evidence": junction_evidence,
+        "bam_path": bam_path,
+        "junction_metrics": junction_metrics,
+        "has_multimapper_data": True,
+        "initial_multimapper_counts": eqc_result["initial_multimapper_counts"],
+        "multimapper_classes": eqc_result["multimapper_classes"],
+        "median_read_length": median_read_length,
+        "fragment_length_hist": fragment_length_hist,
     }
 
     total_elapsed = time.time() - sample_start_time
     logging.info(f"  [{sample_name}] Total processing: {total_elapsed:.1f}s")
-    return (modified_unique_counts[modified_unique_counts > 0].values, sample_name, cache_path)
+    return (
+        modified_unique_counts[modified_unique_counts > 0].values,
+        sample_name,
+        cache_path,
+    )
 
 
 def process_sample_for_caching_encoded(args_tuple):
     """Process a single sample: use cache if valid, otherwise run EqC builder fresh."""
-    bam_path, args, temp_dir, threads_per_worker, shared_cache, cache_manager, annotation_metadata = args_tuple
+    (
+        bam_path,
+        args,
+        temp_dir,
+        threads_per_worker,
+        shared_cache,
+        cache_manager,
+        annotation_metadata,
+    ) = args_tuple
     sample_name = get_sample_name_from_bam(bam_path)
 
     global _string_to_int_map, _junction_string_to_int_map
@@ -635,12 +787,19 @@ def process_sample_for_caching_encoded(args_tuple):
     # Try cache first
     if cache_manager and not args.rebuild_cache:
         valid, cache_path, cache_key = cache_manager.is_cache_valid(
-            sample_name, bam_path, annotation_metadata, args)
+            sample_name, bam_path, annotation_metadata, args
+        )
         if valid:
             try:
                 return _process_sample_cached(
-                    sample_name, bam_path, cache_manager, cache_path,
-                    pipeline_context, shared_cache, args)
+                    sample_name,
+                    bam_path,
+                    cache_manager,
+                    cache_path,
+                    pipeline_context,
+                    shared_cache,
+                    args,
+                )
             except Exception as e:
                 logging.warning(f"[{sample_name}] Failed to load cache: {e}")
                 traceback.print_exc()
@@ -648,16 +807,25 @@ def process_sample_for_caching_encoded(args_tuple):
     # Fresh processing
     try:
         return _process_sample_fresh(
-            sample_name, bam_path, pipeline_context,
-            shared_cache, cache_manager, annotation_metadata,
-            threads_per_worker, temp_dir, args)
+            sample_name,
+            bam_path,
+            pipeline_context,
+            shared_cache,
+            cache_manager,
+            annotation_metadata,
+            threads_per_worker,
+            temp_dir,
+            args,
+        )
     except Exception as e:
         logging.warning(f"    Failed to process {sample_name}: {e}")
         traceback.print_exc()
         return np.array([])
 
 
-def _apply_junction_boosts(sample_name, modified_counts, prior_tracking, weighted_junction_evidence, args):
+def _apply_junction_boosts(
+    sample_name, modified_counts, prior_tracking, weighted_junction_evidence, args
+):
     """Step 1: Apply weighted junction evidence as additive boosts to counts."""
     logging.info(f"    [{sample_name}] Calculating junction boosts....")
 
@@ -668,152 +836,239 @@ def _apply_junction_boosts(sample_name, modified_counts, prior_tracking, weighte
     if prior_tracking is not None:
         common_indices = prior_tracking.index.intersection(evidence_series.index)
         if not common_indices.empty:
-            prior_tracking.loc[common_indices, 'junction_boost'] = final_boost_series.loc[common_indices]
-            prior_tracking.loc[common_indices, 'raw_junction_evidence'] = evidence_series.loc[common_indices]
-            prior_tracking.loc[common_indices, 'junction_weight'] = args.junction_weight
-        prior_tracking['post_junction_count'] = modified_counts.loc[prior_tracking.index]
+            prior_tracking.loc[common_indices, "junction_boost"] = (
+                final_boost_series.loc[common_indices]
+            )
+            prior_tracking.loc[common_indices, "raw_junction_evidence"] = (
+                evidence_series.loc[common_indices]
+            )
+            prior_tracking.loc[common_indices, "junction_weight"] = args.junction_weight
+        prior_tracking["post_junction_count"] = modified_counts.loc[
+            prior_tracking.index
+        ]
 
-    logging.info(f"    [{sample_name}] Transcripts with junction evidence: {sum(final_boost_series > 0)} transcripts")
+    logging.info(
+        f"    [{sample_name}] Transcripts with junction evidence: {sum(final_boost_series > 0)} transcripts"
+    )
 
 
-def _apply_tsl_penalties(sample_name, modified_counts, prior_tracking, pipeline_context, args):
+def _apply_tsl_penalties(
+    sample_name, modified_counts, prior_tracking, pipeline_context, args
+):
     """Step 2: Apply Transcript Support Level penalties."""
-    transcript_info = pipeline_context.get('transcript_info')
+    transcript_info = pipeline_context.get("transcript_info")
     if not transcript_info:
         return
 
-    tsl_penalty_dict = {
-        '1': 1.0, '2': 0.9, '3': 0.7, '4': 0.5, '5': 0.3, 'NA': 0.8
-    }
+    tsl_penalty_dict = {"1": 1.0, "2": 0.9, "3": 0.7, "4": 0.5, "5": 0.3, "NA": 0.8}
     if args.tsl_penalty_values:
         tsl_penalty_dict.update(args.tsl_penalty_values)
 
-    active_index = prior_tracking.index if prior_tracking is not None else modified_counts[modified_counts > 0].index
+    active_index = (
+        prior_tracking.index
+        if prior_tracking is not None
+        else modified_counts[modified_counts > 0].index
+    )
 
     if prior_tracking is not None:
-        prior_tracking['tsl'] = 'NA'
-        prior_tracking['tsl_penalty'] = 1.0
+        prior_tracking["tsl"] = "NA"
+        prior_tracking["tsl_penalty"] = 1.0
 
     penalized_count = 0
     for transcript_int in active_index:
         if transcript_int in transcript_info:
-            tsl = transcript_info[transcript_int].get('tsl', 'NA')
-            penalty = tsl_penalty_dict.get(tsl, tsl_penalty_dict.get('NA', 1.0))
+            tsl = transcript_info[transcript_int].get("tsl", "NA")
+            penalty = tsl_penalty_dict.get(tsl, tsl_penalty_dict.get("NA", 1.0))
 
             if prior_tracking is not None:
-                prior_tracking.loc[transcript_int, 'tsl'] = tsl
-                prior_tracking.loc[transcript_int, 'tsl_penalty'] = penalty
+                prior_tracking.loc[transcript_int, "tsl"] = tsl
+                prior_tracking.loc[transcript_int, "tsl_penalty"] = penalty
 
             if penalty < 1.0 and modified_counts[transcript_int] > 0:
                 modified_counts[transcript_int] *= penalty
                 penalized_count += 1
 
     if prior_tracking is not None:
-        logging.info(f"    TSL penalties by level: {dict(prior_tracking['tsl'].value_counts().sort_index())}")
+        logging.info(
+            f"    TSL penalties by level: {dict(prior_tracking['tsl'].value_counts().sort_index())}"
+        )
     else:
-        logging.info(f"    [{sample_name}] TSL penalties applied to {penalized_count} transcripts")
+        logging.info(
+            f"    [{sample_name}] TSL penalties applied to {penalized_count} transcripts"
+        )
 
 
-def _build_completeness_updates(filtered_model_details, junction_metrics, pipeline_context):
+def _build_completeness_updates(
+    filtered_model_details, junction_metrics, pipeline_context
+):
     """Build the bulk update dict from completeness model details."""
-    updates = {k: {} for k in [
-        'n_expected_junctions', 'n_observed_junctions', 'junction_observation_rate',
-        'completeness_penalty', 'completeness_model', 'terminal_recovery_used',
-        'RMS_used', 'worst_junction_position', 'z_score', 'n_worst_junctions',
-        'worst_junction_positions', 'worst_junction_counts', 'worst_junction_z_scores',
-        'recovery_point', 'worst_expected_vs_actual', 'median_coverage',
-        'pure_median_1pct', 'used_splice_competition', 'n_competing_junctions'
-    ]}
+    updates = {
+        k: {}
+        for k in [
+            "n_expected_junctions",
+            "n_observed_junctions",
+            "junction_observation_rate",
+            "completeness_penalty",
+            "completeness_model",
+            "terminal_recovery_used",
+            "RMS_used",
+            "worst_junction_position",
+            "z_score",
+            "n_worst_junctions",
+            "worst_junction_positions",
+            "worst_junction_counts",
+            "worst_junction_z_scores",
+            "recovery_point",
+            "worst_expected_vs_actual",
+            "median_coverage",
+            "pure_median_1pct",
+            "used_splice_competition",
+            "n_competing_junctions",
+        ]
+    }
 
     for transcript_int, details in filtered_model_details.items():
-        if transcript_int in pipeline_context['transcript_junction_order']:
-            n_expected = len(pipeline_context['transcript_junction_order'][transcript_int])
-            updates['n_expected_junctions'][transcript_int] = n_expected
-            n_observed = len(junction_metrics.get(transcript_int, {}).get('observed_junctions', {}))
-            updates['n_observed_junctions'][transcript_int] = n_observed
+        if transcript_int in pipeline_context["transcript_junction_order"]:
+            n_expected = len(
+                pipeline_context["transcript_junction_order"][transcript_int]
+            )
+            updates["n_expected_junctions"][transcript_int] = n_expected
+            n_observed = len(
+                junction_metrics.get(transcript_int, {}).get("observed_junctions", {})
+            )
+            updates["n_observed_junctions"][transcript_int] = n_observed
             if n_expected > 0:
-                updates['junction_observation_rate'][transcript_int] = n_observed / n_expected
+                updates["junction_observation_rate"][transcript_int] = (
+                    n_observed / n_expected
+                )
 
-        updates['completeness_penalty'][transcript_int] = details.get('penalty', 1.0)
-        updates['completeness_model'][transcript_int] = details.get('model', 'none')
-        updates['terminal_recovery_used'][transcript_int] = details.get('terminal_recovery_used', False)
-        updates['RMS_used'][transcript_int] = (details.get('model', 'none') == 'RMS')
-        updates['z_score'][transcript_int] = details.get('z_score', np.nan)
+        updates["completeness_penalty"][transcript_int] = details.get("penalty", 1.0)
+        updates["completeness_model"][transcript_int] = details.get("model", "none")
+        updates["terminal_recovery_used"][transcript_int] = details.get(
+            "terminal_recovery_used", False
+        )
+        updates["RMS_used"][transcript_int] = details.get("model", "none") == "RMS"
+        updates["z_score"][transcript_int] = details.get("z_score", np.nan)
 
-        if 'worst_positions' in details:
-            updates['worst_junction_position'][transcript_int] = details['worst_positions'][0]
-            updates['n_worst_junctions'][transcript_int] = details.get('n_worst_considered', 1)
-            updates['worst_junction_positions'][transcript_int] = ','.join(map(str, details['worst_positions']))
-            updates['worst_junction_counts'][transcript_int] = ','.join(map(str, details['worst_counts']))
+        if "worst_positions" in details:
+            updates["worst_junction_position"][transcript_int] = details[
+                "worst_positions"
+            ][0]
+            updates["n_worst_junctions"][transcript_int] = details.get(
+                "n_worst_considered", 1
+            )
+            updates["worst_junction_positions"][transcript_int] = ",".join(
+                map(str, details["worst_positions"])
+            )
+            updates["worst_junction_counts"][transcript_int] = ",".join(
+                map(str, details["worst_counts"])
+            )
 
-        if 'recovery_point' in details and details['recovery_point'] is not None:
-            updates['recovery_point'][transcript_int] = details['recovery_point']
+        if "recovery_point" in details and details["recovery_point"] is not None:
+            updates["recovery_point"][transcript_int] = details["recovery_point"]
 
-        if 'median_coverage' in details:
-            updates['median_coverage'][transcript_int] = details['median_coverage']
+        if "median_coverage" in details:
+            updates["median_coverage"][transcript_int] = details["median_coverage"]
 
-        updates['pure_median_1pct'][transcript_int] = details.get('pure_median_1pct', False)
-        updates['used_splice_competition'][transcript_int] = details.get('used_splice_competition', False)
-        updates['n_competing_junctions'][transcript_int] = details.get('n_junctions_with_competitors', 0)
+        updates["pure_median_1pct"][transcript_int] = details.get(
+            "pure_median_1pct", False
+        )
+        updates["used_splice_competition"][transcript_int] = details.get(
+            "used_splice_competition", False
+        )
+        updates["n_competing_junctions"][transcript_int] = details.get(
+            "n_junctions_with_competitors", 0
+        )
 
-        if 'worst_z_scores' in details:
-            updates['worst_junction_z_scores'][transcript_int] = ','.join(f"{z:.2f}" for z in details['worst_z_scores'])
-            if 'worst_expected_values' in details and 'worst_actual_counts' in details:
-                updates['worst_expected_vs_actual'][transcript_int] = ','.join(
-                    f"{act:.0f}/{exp:.0f}" for exp, act in
-                    zip(details['worst_expected_values'], details['worst_actual_counts']))
+        if "worst_z_scores" in details:
+            updates["worst_junction_z_scores"][transcript_int] = ",".join(
+                f"{z:.2f}" for z in details["worst_z_scores"]
+            )
+            if "worst_expected_values" in details and "worst_actual_counts" in details:
+                updates["worst_expected_vs_actual"][transcript_int] = ",".join(
+                    f"{act:.0f}/{exp:.0f}"
+                    for exp, act in zip(
+                        details["worst_expected_values"], details["worst_actual_counts"]
+                    )
+                )
 
     return updates
 
 
-def _apply_completeness_penalties(sample_name, modified_counts, prior_tracking,
-                                  junction_metrics, pipeline_context, args):
+def _apply_completeness_penalties(
+    sample_name,
+    modified_counts,
+    prior_tracking,
+    junction_metrics,
+    pipeline_context,
+    args,
+):
     """Step 3: Calculate and apply junction completeness penalties. Returns model_details."""
     logging.info(f"[{sample_name}] Starting junction completeness calculations")
 
     if prior_tracking is not None:
         # Initialize completeness columns
         completeness_defaults = {
-            'n_expected_junctions': 0, 'n_observed_junctions': 0,
-            'junction_observation_rate': 1.0, 'completeness_penalty': 1.0,
-            'completeness_model': 'none', 'terminal_recovery_used': False,
-            'RMS_used': False, 'worst_junction_position': -1, 'z_score': np.nan,
-            'n_worst_junctions': 1, 'worst_junction_positions': '',
-            'worst_junction_counts': '', 'worst_junction_z_scores': '',
-            'recovery_point': -1, 'worst_expected_vs_actual': '',
-            'median_coverage': np.nan, 'pure_median_1pct': False,
-            'used_splice_competition': False, 'n_competing_junctions': 0
+            "n_expected_junctions": 0,
+            "n_observed_junctions": 0,
+            "junction_observation_rate": 1.0,
+            "completeness_penalty": 1.0,
+            "completeness_model": "none",
+            "terminal_recovery_used": False,
+            "RMS_used": False,
+            "worst_junction_position": -1,
+            "z_score": np.nan,
+            "n_worst_junctions": 1,
+            "worst_junction_positions": "",
+            "worst_junction_counts": "",
+            "worst_junction_z_scores": "",
+            "recovery_point": -1,
+            "worst_expected_vs_actual": "",
+            "median_coverage": np.nan,
+            "pure_median_1pct": False,
+            "used_splice_competition": False,
+            "n_competing_junctions": 0,
         }
         for col, default in completeness_defaults.items():
             prior_tracking[col] = default
 
-    completeness_scores, stats, model_details = calculate_junction_completeness_position_aware_optimized(
-        junction_metrics,
-        pipeline_context['transcript_junction_order'],
-        min_penalty=args.junction_completeness_min_score,
-        overdispersion=args.junction_completeness_overdispersion,
-        pseudocount=0.1,
-        transcript_info=pipeline_context['transcript_info'],
-        terminal_relax=args.terminal_relax,
-        terminal_recovery_rate=args.terminal_recovery_rate,
-        library_type=args.library_type,
-        splice_competitor_map=pipeline_context.get('splice_competitor_map', {}),
-        junction_map=pipeline_context['junction_map']['junction_map'],
+    completeness_scores, stats, model_details = (
+        calculate_junction_completeness_position_aware_optimized(
+            junction_metrics,
+            pipeline_context["transcript_junction_order"],
+            min_penalty=args.junction_completeness_min_score,
+            overdispersion=args.junction_completeness_overdispersion,
+            pseudocount=0.1,
+            transcript_info=pipeline_context["transcript_info"],
+            terminal_relax=args.terminal_relax,
+            terminal_recovery_rate=args.terminal_recovery_rate,
+            library_type=args.library_type,
+            splice_competitor_map=pipeline_context.get("splice_competitor_map", {}),
+            junction_map=pipeline_context["junction_map"]["junction_map"],
+        )
     )
 
     # Log terminal recovery usage
-    if stats['terminal_recovery_used'] > 0:
-        pct_recovery = 100 * stats['terminal_recovery_used'] / stats['complex_analyzed'] if stats['complex_analyzed'] > 0 else 0
-        logging.info(f"  Terminal recovery applied to {stats['terminal_recovery_used']} transcripts ({pct_recovery:.1f}% of complex)")
-        if args.library_type in ['dT', 'polyA']:
-            logging.info(f"  Library type '{args.library_type}': 5' dropout recovery enabled")
-        elif args.library_type == 'random':
+    if stats["terminal_recovery_used"] > 0:
+        pct_recovery = (
+            100 * stats["terminal_recovery_used"] / stats["complex_analyzed"]
+            if stats["complex_analyzed"] > 0
+            else 0
+        )
+        logging.info(
+            f"  Terminal recovery applied to {stats['terminal_recovery_used']} transcripts ({pct_recovery:.1f}% of complex)"
+        )
+        if args.library_type in ["dT", "polyA"]:
+            logging.info(
+                f"  Library type '{args.library_type}': 5' dropout recovery enabled"
+            )
+        elif args.library_type == "random":
             logging.info(f"  Library type 'random': 3' dropout recovery enabled")
 
     # Apply penalties to counts
     penalized_count = 0
     for transcript_int, details in model_details.items():
-        penalty = details.get('penalty', 1.0)
+        penalty = details.get("penalty", 1.0)
         if penalty < 1.0:
             modified_counts[transcript_int] *= penalty
             penalized_count += 1
@@ -821,35 +1076,51 @@ def _apply_completeness_penalties(sample_name, modified_counts, prior_tracking,
     if prior_tracking is not None:
         # Save stats file
         stats_file = f"{args.prefix}_{sample_name}_junction_completeness_stats.json"
-        with open(stats_file, 'w') as f:
+        with open(stats_file, "w") as f:
             json.dump(stats, f, indent=2)
 
         # Build and apply bulk tracking updates
-        logging.info(f"[{sample_name}] Updating tracking data for {len(model_details)} transcripts...")
-        filtered_model_details = {k: model_details[k] for k in prior_tracking.index if k in model_details}
-        updates = _build_completeness_updates(filtered_model_details, junction_metrics, pipeline_context)
+        logging.info(
+            f"[{sample_name}] Updating tracking data for {len(model_details)} transcripts..."
+        )
+        filtered_model_details = {
+            k: model_details[k] for k in prior_tracking.index if k in model_details
+        }
+        updates = _build_completeness_updates(
+            filtered_model_details, junction_metrics, pipeline_context
+        )
         _apply_bulk_updates(prior_tracking, updates)
         logging.info(f"[{sample_name}] Tracking updates complete")
 
-    logging.info(f"    [{sample_name}] Junction completeness penalties: "
-                 f"{sum(score < 1.0 for score in completeness_scores.values())} transcripts")
+    logging.info(
+        f"    [{sample_name}] Junction completeness penalties: "
+        f"{sum(score < 1.0 for score in completeness_scores.values())} transcripts"
+    )
     logging.info(f"    [{sample_name}]   Model: median-based with terminal recovery")
-    logging.info(f"    [{sample_name}]   Penalty severity - Mild: {stats['mild_penalty']}, "
-                 f"Moderate: {stats['moderate_penalty']}, Severe: {stats['severe_penalty']}")
+    logging.info(
+        f"    [{sample_name}]   Penalty severity - Mild: {stats['mild_penalty']}, "
+        f"Moderate: {stats['moderate_penalty']}, Severe: {stats['severe_penalty']}"
+    )
 
-    if args.terminal_relax and stats['terminal_recovery_used'] > 0:
-        logging.info(f"    [{sample_name}]   Terminal recovery: {stats['terminal_recovery_used']} transcripts "
-                     f"(rate={args.terminal_recovery_rate})")
+    if args.terminal_relax and stats["terminal_recovery_used"] > 0:
+        logging.info(
+            f"    [{sample_name}]   Terminal recovery: {stats['terminal_recovery_used']} transcripts "
+            f"(rate={args.terminal_recovery_rate})"
+        )
 
-    if stats['pure_median_1pct'] > 0:
-        logging.info(f"    [{sample_name}]   <1% rule triggered: {stats['pure_median_1pct']} transcripts")
+    if stats["pure_median_1pct"] > 0:
+        logging.info(
+            f"    [{sample_name}]   <1% rule triggered: {stats['pure_median_1pct']} transcripts"
+        )
 
     if prior_tracking is not None:
-        n_multi = sum(prior_tracking['n_worst_junctions'] > 1)
+        n_multi = sum(prior_tracking["n_worst_junctions"] > 1)
         if n_multi > 0:
-            logging.info(f"    [{sample_name}]   Multi-junction penalties: {n_multi} transcripts "
-                         f"(considered up to {prior_tracking['n_worst_junctions'].max()} worst junctions)")
-        prior_tracking['post_completeness_count'] = modified_counts
+            logging.info(
+                f"    [{sample_name}]   Multi-junction penalties: {n_multi} transcripts "
+                f"(considered up to {prior_tracking['n_worst_junctions'].max()} worst junctions)"
+            )
+        prior_tracking["post_completeness_count"] = modified_counts
 
     return model_details
 
@@ -859,84 +1130,126 @@ def _combine_penalties(penalty_a, penalty_b):
     return (min(penalty_a, penalty_b) + penalty_a * penalty_b) / 2
 
 
-def _apply_subset_penalties(sample_name, modified_counts, prior_tracking, initial_counts,
-                            junction_metrics, model_details, special_feature_counts,
-                            pipeline_context, args):
+def _apply_subset_penalties(
+    sample_name,
+    modified_counts,
+    prior_tracking,
+    initial_counts,
+    junction_metrics,
+    model_details,
+    special_feature_counts,
+    pipeline_context,
+    args,
+):
     """Step 4: Calculate and apply subset isoform penalties."""
     logging.info(f"    [{sample_name}] calculating subset penalties...")
 
     nonzero_counts = initial_counts[initial_counts > 0]
-    expression_scale = np.percentile(nonzero_counts, 25) if len(nonzero_counts) > 0 else 20
+    expression_scale = (
+        np.percentile(nonzero_counts, 25) if len(nonzero_counts) > 0 else 20
+    )
 
     if prior_tracking is not None:
         # Initialize subset columns
-        for col, default in [('is_subset', False), ('original_subset_penalty', 1.0),
-                             ('subset_z_score', np.nan), ('adjusted_subset_penalty', np.nan)]:
+        for col, default in [
+            ("is_subset", False),
+            ("original_subset_penalty", 1.0),
+            ("subset_z_score", np.nan),
+            ("adjusted_subset_penalty", np.nan),
+        ]:
             prior_tracking[col] = default
 
     subset_details = calculate_subset_penalties_holistic(
-        modified_counts, pipeline_context['subset_relationships'],
-        junction_metrics, pipeline_context['junction_map']['junction_map'],
-        pipeline_context['transcript_junction_order'],
+        modified_counts,
+        pipeline_context["subset_relationships"],
+        junction_metrics,
+        pipeline_context["junction_map"]["junction_map"],
+        pipeline_context["transcript_junction_order"],
         min_penalty=args.subset_penalty_min,
         subset_evidence_threshold=args.subset_evidence_threshold,
         overdispersion=args.subset_penalty_overdispersion,
         expression_scale_factor=expression_scale,
     )
 
-    logging.info(f"    [{sample_name}] Applying combined subset penalties with penalty combination...")
+    logging.info(
+        f"    [{sample_name}] Applying combined subset penalties with penalty combination..."
+    )
 
     # In light mode, track strategies for logging only (lightweight dict)
     strategy_counts = {} if prior_tracking is None else None
     subset_updates = None
     if prior_tracking is not None:
-        subset_updates = {k: {} for k in [
-            'is_subset', 'original_subset_penalty', 'subset_z_score',
-            'adjusted_subset_penalty', 'penalty_combination_strategy'
-        ]}
+        subset_updates = {
+            k: {}
+            for k in [
+                "is_subset",
+                "original_subset_penalty",
+                "subset_z_score",
+                "adjusted_subset_penalty",
+                "penalty_combination_strategy",
+            ]
+        }
 
     # Filter to expressed transcripts when tracking
     if prior_tracking is not None:
-        active_subset_details = {k: subset_details[k] for k in prior_tracking.index if k in subset_details}
+        active_subset_details = {
+            k: subset_details[k] for k in prior_tracking.index if k in subset_details
+        }
     else:
         active_subset_details = subset_details
 
     for transcript_int, details in active_subset_details.items():
-        initial_subset_penalty_value = details.get('penalty', 1.0)
-        completeness_penalty = model_details.get(transcript_int, {}).get('penalty', 1.0)
+        initial_subset_penalty_value = details.get("penalty", 1.0)
+        completeness_penalty = model_details.get(transcript_int, {}).get("penalty", 1.0)
         has_completeness = completeness_penalty < 1.0
 
         if has_completeness:
-            final_penalty = _combine_penalties(completeness_penalty, initial_subset_penalty_value)
-            penalty_strategy = 'comb_completeness_subset'
+            final_penalty = _combine_penalties(
+                completeness_penalty, initial_subset_penalty_value
+            )
+            penalty_strategy = "comb_completeness_subset"
         else:
             final_penalty = initial_subset_penalty_value
-            penalty_strategy = 'subset_only'
+            penalty_strategy = "subset_only"
 
         # Adjust from current state (initial * completeness) to target (initial * final)
-        adjustment_factor = final_penalty / completeness_penalty if completeness_penalty > 0 else final_penalty
+        adjustment_factor = (
+            final_penalty / completeness_penalty
+            if completeness_penalty > 0
+            else final_penalty
+        )
         modified_counts[transcript_int] *= adjustment_factor
 
         if subset_updates is not None:
-            subset_updates['is_subset'][transcript_int] = bool(details['is_subset'])
-            subset_updates['original_subset_penalty'][transcript_int] = initial_subset_penalty_value
-            if 'z_score' in details:
-                subset_updates['subset_z_score'][transcript_int] = details['z_score']
-            subset_updates['adjusted_subset_penalty'][transcript_int] = final_penalty
-            subset_updates['penalty_combination_strategy'][transcript_int] = penalty_strategy
+            subset_updates["is_subset"][transcript_int] = bool(details["is_subset"])
+            subset_updates["original_subset_penalty"][
+                transcript_int
+            ] = initial_subset_penalty_value
+            if "z_score" in details:
+                subset_updates["subset_z_score"][transcript_int] = details["z_score"]
+            subset_updates["adjusted_subset_penalty"][transcript_int] = final_penalty
+            subset_updates["penalty_combination_strategy"][
+                transcript_int
+            ] = penalty_strategy
         else:
-            strategy_counts[penalty_strategy] = strategy_counts.get(penalty_strategy, 0) + 1
+            strategy_counts[penalty_strategy] = (
+                strategy_counts.get(penalty_strategy, 0) + 1
+            )
 
     if subset_updates is not None:
         logging.info(f"    [{sample_name}] Applying subset penalty updates...")
         _apply_bulk_updates(prior_tracking, subset_updates)
-        if subset_updates['penalty_combination_strategy']:
-            combo_counts = pd.Series(subset_updates['penalty_combination_strategy']).value_counts()
+        if subset_updates["penalty_combination_strategy"]:
+            combo_counts = pd.Series(
+                subset_updates["penalty_combination_strategy"]
+            ).value_counts()
             logging.info(f"    [{sample_name}] Penalty combination strategies:")
             for strategy, count in combo_counts.items():
                 logging.info(f"      {strategy}: {count} transcripts")
     else:
-        logging.info(f"    [{sample_name}] Subset penalties applied to {len(subset_details)} transcripts")
+        logging.info(
+            f"    [{sample_name}] Subset penalties applied to {len(subset_details)} transcripts"
+        )
         for strategy, count in strategy_counts.items():
             logging.info(f"      {strategy}: {count} transcripts")
 
@@ -945,53 +1258,72 @@ def _write_prior_tracking_report(sample_name, prior_tracking, args):
     """Write verbose prior adjustment details and summary to disk."""
     logging.info(f"    [{sample_name}] Calculating final statistics...")
 
-    prior_tracking['total_penalty'] = 1.0
-    for col in ['tsl_penalty', 'completeness_penalty', 'subset_penalty']:
+    prior_tracking["total_penalty"] = 1.0
+    for col in ["tsl_penalty", "completeness_penalty", "subset_penalty"]:
         if col in prior_tracking.columns:
-            prior_tracking['total_penalty'] *= prior_tracking[col]
+            prior_tracking["total_penalty"] *= prior_tracking[col]
         else:
             prior_tracking[col] = 1.0
 
-    prior_tracking['total_prior_adjustment'] = prior_tracking['final_count'] / prior_tracking['initial_count']
-    prior_tracking.loc[prior_tracking['initial_count'] == 0, 'total_prior_adjustment'] = np.inf
+    prior_tracking["total_prior_adjustment"] = (
+        prior_tracking["final_count"] / prior_tracking["initial_count"]
+    )
+    prior_tracking.loc[
+        prior_tracking["initial_count"] == 0, "total_prior_adjustment"
+    ] = np.inf
 
-    prior_tracking['had_junction_boost'] = prior_tracking['junction_boost'] > 0
-    prior_tracking['had_penalty'] = prior_tracking['total_penalty'] < 1.0
+    prior_tracking["had_junction_boost"] = prior_tracking["junction_boost"] > 0
+    prior_tracking["had_penalty"] = prior_tracking["total_penalty"] < 1.0
 
     # Build penalty types
-    has_tsl = prior_tracking['tsl_penalty'] < 1.0
-    has_comp = prior_tracking['completeness_penalty'] < 1.0
-    has_subset = prior_tracking['subset_penalty'] < 1.0
+    has_tsl = prior_tracking["tsl_penalty"] < 1.0
+    has_comp = prior_tracking["completeness_penalty"] < 1.0
+    has_subset = prior_tracking["subset_penalty"] < 1.0
 
     penalty_types = []
     for i in range(len(prior_tracking)):
         parts = []
-        if has_tsl.iloc[i]: parts.append('tsl')
-        if has_comp.iloc[i]: parts.append('completeness')
-        if has_subset.iloc[i]: parts.append('subset')
-        penalty_types.append('_'.join(parts) if parts else 'none')
-    prior_tracking['penalty_types'] = penalty_types
+        if has_tsl.iloc[i]:
+            parts.append("tsl")
+        if has_comp.iloc[i]:
+            parts.append("completeness")
+        if has_subset.iloc[i]:
+            parts.append("subset")
+        penalty_types.append("_".join(parts) if parts else "none")
+    prior_tracking["penalty_types"] = penalty_types
 
     # Write detailed file
     prior_tracking_decoded = decode_transcript_ids(prior_tracking, _int_to_string_map)
     output_file = f"{args.prefix}_{sample_name}_prior_adjustments.tsv.gz"
-    prior_tracking_decoded.to_csv(output_file, sep='\t', index=True, compression='gzip')
+    prior_tracking_decoded.to_csv(output_file, sep="\t", index=True, compression="gzip")
     logging.info(f"    [{sample_name}] Wrote prior adjustment details to {output_file}")
 
     # Write summary
     summary_stats = {
-        'sample': sample_name,
-        'transcripts_total': len(prior_tracking),
-        'transcripts_with_reads': sum(prior_tracking['initial_count'] > 0),
-        'transcripts_boosted': sum(prior_tracking['had_junction_boost']),
-        'transcripts_penalized': sum(prior_tracking['had_penalty']),
-        'tsl_penalties': sum(prior_tracking['tsl_penalty'] < 1.0),
-        'completeness_penalties': sum(prior_tracking['completeness_penalty'] < 1.0),
-        'subset_penalties': sum(prior_tracking['subset_penalty'] < 1.0),
-        'total_initial_reads': prior_tracking['initial_count'].sum(),
-        'total_final_reads': prior_tracking['final_count'].sum(),
-        'median_boost': prior_tracking.loc[prior_tracking['junction_boost'] > 0, 'junction_boost'].median() if any(prior_tracking['junction_boost'] > 0) else 0,
-        'median_penalty': prior_tracking.loc[prior_tracking['total_penalty'] < 1.0, 'total_penalty'].median() if any(prior_tracking['total_penalty'] < 1.0) else 1.0
+        "sample": sample_name,
+        "transcripts_total": len(prior_tracking),
+        "transcripts_with_reads": sum(prior_tracking["initial_count"] > 0),
+        "transcripts_boosted": sum(prior_tracking["had_junction_boost"]),
+        "transcripts_penalized": sum(prior_tracking["had_penalty"]),
+        "tsl_penalties": sum(prior_tracking["tsl_penalty"] < 1.0),
+        "completeness_penalties": sum(prior_tracking["completeness_penalty"] < 1.0),
+        "subset_penalties": sum(prior_tracking["subset_penalty"] < 1.0),
+        "total_initial_reads": prior_tracking["initial_count"].sum(),
+        "total_final_reads": prior_tracking["final_count"].sum(),
+        "median_boost": (
+            prior_tracking.loc[
+                prior_tracking["junction_boost"] > 0, "junction_boost"
+            ].median()
+            if any(prior_tracking["junction_boost"] > 0)
+            else 0
+        ),
+        "median_penalty": (
+            prior_tracking.loc[
+                prior_tracking["total_penalty"] < 1.0, "total_penalty"
+            ].median()
+            if any(prior_tracking["total_penalty"] < 1.0)
+            else 1.0
+        ),
     }
 
     # One row per sample, appended by the workers. main() removes any summary
@@ -999,66 +1331,91 @@ def _write_prior_tracking_report(sample_name, prior_tracking, args):
     # the file no longer accumulates rows across reruns.
     summary_file = f"{args.prefix}_prior_adjustment_summary.tsv"
     if not os.path.exists(summary_file):
-        with open(summary_file, 'w') as f:
-            f.write('\t'.join(summary_stats.keys()) + '\n')
-    with open(summary_file, 'a') as f:
-        f.write('\t'.join(str(v) for v in summary_stats.values()) + '\n')
+        with open(summary_file, "w") as f:
+            f.write("\t".join(summary_stats.keys()) + "\n")
+    with open(summary_file, "a") as f:
+        f.write("\t".join(str(v) for v in summary_stats.values()) + "\n")
 
 
-def create_junction_informed_priors_encoded_with_penalties(sample_name, initial_counts,
-                                                         weighted_junction_evidence,
-                                                         junction_metrics,
-                                                         pipeline_context,
-                                                         special_feature_counts,
-                                                         args):
+def create_junction_informed_priors_encoded_with_penalties(
+    sample_name,
+    initial_counts,
+    weighted_junction_evidence,
+    junction_metrics,
+    pipeline_context,
+    special_feature_counts,
+    args,
+):
     """Apply junction evidence, TSL penalties, completeness, and subset penalties to initial counts."""
     modified_counts = initial_counts.copy()
 
     # In light mode, skip prior tracking entirely for memory/speed savings
-    if getattr(args, 'light', False):
+    if getattr(args, "light", False):
         prior_tracking = None
     else:
         prior_tracking = pd.DataFrame(index=initial_counts.index[initial_counts > 0])
-        prior_tracking['initial_count'] = initial_counts
+        prior_tracking["initial_count"] = initial_counts
 
     # Step 1: Junction evidence boosts
-    _apply_junction_boosts(sample_name, modified_counts, prior_tracking,
-                           weighted_junction_evidence, args)
+    _apply_junction_boosts(
+        sample_name, modified_counts, prior_tracking, weighted_junction_evidence, args
+    )
 
     # Step 2: TSL penalties
     if args.use_tsl_penalty:
-        _apply_tsl_penalties(sample_name, modified_counts, prior_tracking,
-                             pipeline_context, args)
+        _apply_tsl_penalties(
+            sample_name, modified_counts, prior_tracking, pipeline_context, args
+        )
 
     # Step 3: Junction completeness penalties
     model_details = {}
     if args.use_junction_completeness and junction_metrics:
         model_details = _apply_completeness_penalties(
-            sample_name, modified_counts, prior_tracking,
-            junction_metrics, pipeline_context, args)
+            sample_name,
+            modified_counts,
+            prior_tracking,
+            junction_metrics,
+            pipeline_context,
+            args,
+        )
 
     # Step 4: Subset penalties
-    if args.use_subset_penalty and pipeline_context.get('subset_relationships'):
-        _apply_subset_penalties(sample_name, modified_counts, prior_tracking, initial_counts,
-                                junction_metrics, model_details, special_feature_counts,
-                                pipeline_context, args)
+    if args.use_subset_penalty and pipeline_context.get("subset_relationships"):
+        _apply_subset_penalties(
+            sample_name,
+            modified_counts,
+            prior_tracking,
+            initial_counts,
+            junction_metrics,
+            model_details,
+            special_feature_counts,
+            pipeline_context,
+            args,
+        )
 
     # Final tracking and optional report
     if prior_tracking is not None:
-        prior_tracking['final_count'] = modified_counts
+        prior_tracking["final_count"] = modified_counts
         if args.verbose_output:
             _write_prior_tracking_report(sample_name, prior_tracking, args)
 
     return modified_counts
 
-def calculate_global_thresholds_and_cache_results_encoded(pipeline_context, all_bam_paths,
-                                                         args, temp_dir,
-                                                         string_to_int, int_to_string,
-                                                         percentile_thresholds=[25, 75]):
+
+def calculate_global_thresholds_and_cache_results_encoded(
+    pipeline_context,
+    all_bam_paths,
+    args,
+    temp_dir,
+    string_to_int,
+    int_to_string,
+    percentile_thresholds=[25, 75],
+):
     """Modified to use encoded processing with proper worker initialization."""
 
-    logging.info(f".  ->  Processing {len(all_bam_paths)} samples to calculate thresholds AND cache unique mapper results...")
-
+    logging.info(
+        f".  ->  Processing {len(all_bam_paths)} samples to calculate thresholds AND cache unique mapper results..."
+    )
 
     logging.info("Junction evidence will be integrated into initial counts")
 
@@ -1073,12 +1430,21 @@ def calculate_global_thresholds_and_cache_results_encoded(pipeline_context, all_
         managed_cache = manager.dict()
 
         # Get cache_manager if it exists
-        cache_manager = pipeline_context.get('cache_manager')
-        annotation_metadata = pipeline_context['annotation_metadata']
+        cache_manager = pipeline_context.get("cache_manager")
+        annotation_metadata = pipeline_context["annotation_metadata"]
 
-        pool_args = [(bam_path, args, temp_dir, threads_per_worker,
-                    managed_cache, cache_manager, annotation_metadata)
-                    for bam_path in all_bam_paths]
+        pool_args = [
+            (
+                bam_path,
+                args,
+                temp_dir,
+                threads_per_worker,
+                managed_cache,
+                cache_manager,
+                annotation_metadata,
+            )
+            for bam_path in all_bam_paths
+        ]
 
         # Process with initialized workers
         # Workers append one row per sample to the prior summary while applying
@@ -1090,19 +1456,22 @@ def calculate_global_thresholds_and_cache_results_encoded(pipeline_context, all_
         with multiprocessing.Pool(
             processes=min(args.threads, len(all_bam_paths)),
             initializer=init_worker,
-            initargs=(int_to_string, string_to_int,
-                    pipeline_context['junction_int_to_string'],
-                    pipeline_context['junction_string_to_int'],
-                    pipeline_context['junction_map'],
-                    pipeline_context['transcript_junction_order'],
-                    pipeline_context['transcript_info'],
-                    pipeline_context['subset_relationships'],
-                    pipeline_context['splice_competitor_map'],
-                    pipeline_context['transcript_expected_junctions'],
-                    pipeline_context['gene_map'],
-                    pipeline_context['te_map'],
-                    pipeline_context['exon_index'],
-                    pipeline_context['junction_unstranded'])
+            initargs=(
+                int_to_string,
+                string_to_int,
+                pipeline_context["junction_int_to_string"],
+                pipeline_context["junction_string_to_int"],
+                pipeline_context["junction_map"],
+                pipeline_context["transcript_junction_order"],
+                pipeline_context["transcript_info"],
+                pipeline_context["subset_relationships"],
+                pipeline_context["splice_competitor_map"],
+                pipeline_context["transcript_expected_junctions"],
+                pipeline_context["gene_map"],
+                pipeline_context["te_map"],
+                pipeline_context["exon_index"],
+                pipeline_context["junction_unstranded"],
+            ),
         ) as pool:
             pool_results = pool.map(process_sample_for_caching_encoded, pool_args)
 
@@ -1113,8 +1482,8 @@ def calculate_global_thresholds_and_cache_results_encoded(pipeline_context, all_
             if cache_path:
                 cache_path_map[sample_name] = cache_path
 
-        pipeline_context['cache_path_manifest'] = cache_path_map
-        pipeline_context['cached_results'].update(dict(managed_cache))
+        pipeline_context["cache_path_manifest"] = cache_path_map
+        pipeline_context["cached_results"].update(dict(managed_cache))
 
     # Calculate global thresholds
     all_expression_values = []
@@ -1129,109 +1498,141 @@ def calculate_global_thresholds_and_cache_results_encoded(pipeline_context, all_
     low_threshold = np.percentile(all_expression_array, percentile_thresholds[0])
     high_threshold = np.percentile(all_expression_array, percentile_thresholds[1])
 
-    pipeline_context['global_thresholds'] = {
-        'low_threshold': low_threshold,
-        'high_threshold': high_threshold,
-        'total_values': len(all_expression_values),
-        'percentile_thresholds': percentile_thresholds,
-        'samples_processed': len(all_bam_paths),
-        'optimization': 'cached_results_with_integer_ids',
-        'junction_aware': True
+    pipeline_context["global_thresholds"] = {
+        "low_threshold": low_threshold,
+        "high_threshold": high_threshold,
+        "total_values": len(all_expression_values),
+        "percentile_thresholds": percentile_thresholds,
+        "samples_processed": len(all_bam_paths),
+        "optimization": "cached_results_with_integer_ids",
+        "junction_aware": True,
     }
 
     logging.info(f". -> THRESHOLDS CALCULATED + RESULTS CACHED ===")
-    logging.info(f"  Low threshold: {low_threshold:.2f}, High threshold: {high_threshold:.2f}")
+    logging.info(
+        f"  Low threshold: {low_threshold:.2f}, High threshold: {high_threshold:.2f}"
+    )
 
     return
 
+
 def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     """Modified to work with integer IDs throughout."""
-    sample_cache_data, global_data, bam_path, args, temp_dir, threads_per_worker = args_tuple
+    sample_cache_data, global_data, bam_path, args, temp_dir, threads_per_worker = (
+        args_tuple
+    )
     sample_name = get_sample_name_from_bam(bam_path)
-    
+
     # Use global mappings
     global _string_to_int_map, _int_to_string_map, _transcript_info
-    
-    logging.info(f"[{sample_name}] Starting Joint EM process (1/4) Loading multi-mapper data...")
+
+    logging.info(
+        f"[{sample_name}] Starting Joint EM process (1/4) Loading multi-mapper data..."
+    )
 
     # --- 1. MULTIMAPPER PROCESSING ---
     # EqC builder produces multimapper data in the same pass as unique mappers,
     # so cache always has has_multimapper_data=True for new caches.
-    if sample_cache_data and sample_cache_data.get('has_multimapper_data', False):
+    if sample_cache_data and sample_cache_data.get("has_multimapper_data", False):
         logging.info(f"[{sample_name}]  (1/4) Using cached multi-mapper results")
-        initial_multimapper_counts = sample_cache_data.get('initial_multimapper_counts', pd.Series(dtype=np.float64))
-        multimapper_classes = sample_cache_data.get('multimapper_classes', {})
+        initial_multimapper_counts = sample_cache_data.get(
+            "initial_multimapper_counts", pd.Series(dtype=np.float64)
+        )
+        multimapper_classes = sample_cache_data.get("multimapper_classes", {})
         multimapper_classes = defaultdict(int, multimapper_classes)
     else:
-        logging.error(f"[{sample_name}] No multimapper data in cache. "
-                      f"This cache was created with the old featureCounts pipeline. "
-                      f"Please rebuild with --rebuild_cache.")
-        raise RuntimeError(f"Cache for {sample_name} lacks multimapper data. Rebuild with --rebuild_cache.")
-    
+        logging.error(
+            f"[{sample_name}] No multimapper data in cache. "
+            f"This cache was created with the old featureCounts pipeline. "
+            f"Please rebuild with --rebuild_cache."
+        )
+        raise RuntimeError(
+            f"Cache for {sample_name} lacks multimapper data. Rebuild with --rebuild_cache."
+        )
+
     # --- 2. UNIQUE MAPPER PROCESSING (use cache) ---
     junction_evidence = {}
     if sample_cache_data:
         logging.info(f"[{sample_name}]  (2/4) Using unique mapper results ✨")
-        
-        if 'modified_unique_counts' in sample_cache_data:
-            initial_unique_counts = sample_cache_data['modified_unique_counts']
-            junction_evidence = sample_cache_data.get('junction_evidence', {})
+
+        if "modified_unique_counts" in sample_cache_data:
+            initial_unique_counts = sample_cache_data["modified_unique_counts"]
+            junction_evidence = sample_cache_data.get("junction_evidence", {})
         else:
-            initial_unique_counts = sample_cache_data['initial_unique_counts']
-            
-        unique_mapper_groups = sample_cache_data['unique_mapper_groups']
-        
+            initial_unique_counts = sample_cache_data["initial_unique_counts"]
+
+        unique_mapper_groups = sample_cache_data["unique_mapper_groups"]
+
         if junction_evidence:
-            logging.info(f"[{sample_name}]    -> Using junction-informed initial counts {len(junction_evidence)} transcripts with unique junction evidence")
+            logging.info(
+                f"[{sample_name}]    -> Using junction-informed initial counts {len(junction_evidence)} transcripts with unique junction evidence"
+            )
     else:
         logging.error(f"[{sample_name}] Cache miss - this should not happen!")
         raise RuntimeError(f"No cached data found for {sample_name}")
-    
+
     # --- 3. DUMP EM CLASSES (if requested) ---
     if args.dump_em_classes:
         # Decode for debugging output
         class_data = {
-            'sample_name': sample_name,
-            'initial_unique_counts': decode_transcript_ids(sample_cache_data['initial_unique_counts'], _int_to_string_map).to_dict(),
-            'unique_mapper_groups': decode_transcript_ids(unique_mapper_groups, _int_to_string_map),
-            'multimapper_classes': decode_transcript_ids(multimapper_classes, _int_to_string_map),
-            'boosted_unique_counts': decode_transcript_ids(initial_unique_counts, _int_to_string_map).to_dict(),
-            'initial_multimapper_counts': decode_transcript_ids(initial_multimapper_counts, _int_to_string_map).to_dict(),
-            'junction_evidence': decode_transcript_ids(junction_evidence, _int_to_string_map),
-            'junction_boosted_transcripts': [_int_to_string_map[i] for i in junction_evidence.keys() 
-                                            if 0 <= i < len(_int_to_string_map)],
-            'global_expression_thresholds': global_data['global_thresholds'],
-            'used_cached_results': True,
-            'junction_aware': True
+            "sample_name": sample_name,
+            "initial_unique_counts": decode_transcript_ids(
+                sample_cache_data["initial_unique_counts"], _int_to_string_map
+            ).to_dict(),
+            "unique_mapper_groups": decode_transcript_ids(
+                unique_mapper_groups, _int_to_string_map
+            ),
+            "multimapper_classes": decode_transcript_ids(
+                multimapper_classes, _int_to_string_map
+            ),
+            "boosted_unique_counts": decode_transcript_ids(
+                initial_unique_counts, _int_to_string_map
+            ).to_dict(),
+            "initial_multimapper_counts": decode_transcript_ids(
+                initial_multimapper_counts, _int_to_string_map
+            ).to_dict(),
+            "junction_evidence": decode_transcript_ids(
+                junction_evidence, _int_to_string_map
+            ),
+            "junction_boosted_transcripts": [
+                _int_to_string_map[i]
+                for i in junction_evidence.keys()
+                if 0 <= i < len(_int_to_string_map)
+            ],
+            "global_expression_thresholds": global_data["global_thresholds"],
+            "used_cached_results": True,
+            "junction_aware": True,
         }
-        
+
         dump_path = f"{args.prefix}_{sample_name}_em_classes.pkl"
-        with open(dump_path, 'wb') as f:
+        with open(dump_path, "wb") as f:
             pickle.dump(class_data, f)
-        
+
         logging.info(f"[{sample_name}] Saved EM classes to {dump_path}")
-    
+
     # --- 4. EM ALGORITHM ---
-    logging.info(f"[{sample_name}]  (3/4) Initializing active features and starting EM iterations...")
+    logging.info(
+        f"[{sample_name}]  (3/4) Initializing active features and starting EM iterations..."
+    )
     all_feature_ids = np.arange(len(_string_to_int_map))  # Use integer IDs directly
     # Just track active features, no complex filtering
-    
-    #intialize reports incase not doing report calculations
+
+    # intialize reports incase not doing report calculations
     transcript_assignments = {}
     shared_fractions = {}
     distinguishability_metrics = {}
     junction_confidence_metrics = {}
 
     logging.info(f"[{sample_name}]  (3/4) Preparing length normalization vector...")
-    
-    # The bam_path_map would need to be passed into the worker, perhaps in the global_data dict 
-    
+
+    # The bam_path_map would need to be passed into the worker, perhaps in the global_data dict
+
     active_features = set()
 
     # Anything with non-zero initial counts
     active_features.update(initial_unique_counts[initial_unique_counts > 0].index)
 
-    # Anything in any equivalence class  
+    # Anything in any equivalence class
     for group in unique_mapper_groups.keys():
         active_features.update(group)
     for feature_set in multimapper_classes.keys():
@@ -1241,33 +1642,39 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     n_active = len(active_features)
     n_total = len(all_feature_ids)
 
-    logging.info(f"[{sample_name}] Processing {n_active:,} active features "
-                f"({n_active/n_total*100:.1f}% of {n_total:,} total)")
-    
+    logging.info(
+        f"[{sample_name}] Processing {n_active:,} active features "
+        f"({n_active/n_total*100:.1f}% of {n_total:,} total)"
+    )
+
     if args.output_tpm:
-        frag_hist = sample_cache_data.get('fragment_length_hist') if sample_cache_data else None
+        frag_hist = (
+            sample_cache_data.get("fragment_length_hist") if sample_cache_data else None
+        )
         if not frag_hist and not args.frag_stats_dir and not args.mean_fragment_length:
-            if not getattr(args, 'paired_end', True):
-                logging.warning(f"[{sample_name}] Single-end library: fragment lengths are not "
-                                f"measurable, so TPM uses annotated transcript lengths. Pass "
-                                f"--mean_fragment_length to supply an effective length model.")
+            if not getattr(args, "paired_end", True):
+                logging.warning(
+                    f"[{sample_name}] Single-end library: fragment lengths are not "
+                    f"measurable, so TPM uses annotated transcript lengths. Pass "
+                    f"--mean_fragment_length to supply an effective length model."
+                )
             else:
-                logging.warning(f"[{sample_name}] TPM requested but no fragment length histogram "
-                                f"is attached to this sample. Caches written before the parser "
-                                f"measured it have none - rerun with --rebuild_cache for empirical "
-                                f"effective lengths. Falling back to annotated transcript lengths.")
+                logging.warning(
+                    f"[{sample_name}] TPM requested but no fragment length histogram "
+                    f"is attached to this sample. Caches written before the parser "
+                    f"measured it have none - rerun with --rebuild_cache for empirical "
+                    f"effective lengths. Falling back to annotated transcript lengths."
+                )
         length_vector = prepare_length_vector(
             sample_name,
             bam_path,
             args,
-            _transcript_info, # Use the global transcript_info map
+            _transcript_info,  # Use the global transcript_info map
             list(active_features),
             frag_hist=frag_hist,
         )
     else:
         length_vector = None
-        
-
 
     # Initialize counts for active features only
     active_unique_counts = pd.Series(0.0, index=active_features, dtype=np.float64)
@@ -1277,7 +1684,9 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
 
     active_initial_multi = pd.Series(0.0, index=active_features, dtype=np.float64)
     if len(initial_multimapper_counts) > 0:
-        overlap = active_features[np.isin(active_features, initial_multimapper_counts.index)]
+        overlap = active_features[
+            np.isin(active_features, initial_multimapper_counts.index)
+        ]
         active_initial_multi[overlap] = initial_multimapper_counts[overlap].values
 
     # Keep full unique_mapper_groups for confidence calculations later
@@ -1288,7 +1697,9 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     del initial_multimapper_counts
     gc.collect()
 
-    logging.info(f"[{sample_name}] Initializing priors & starting joint momentum-accelerated EM iterations...")
+    logging.info(
+        f"[{sample_name}] Initializing priors & starting joint momentum-accelerated EM iterations..."
+    )
 
     # Initialize active counts
     active_total_counts = active_unique_counts.add(active_initial_multi, fill_value=0)
@@ -1296,15 +1707,14 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
     active_final_multi = active_initial_multi.copy()
 
     # Create full-sized pre-EM counts for discord calculation later (skip in light mode)
-    if getattr(args, 'light', False):
+    if getattr(args, "light", False):
         pre_em_total_counts = None
     else:
         pre_em_total_counts = pd.Series(0.0, index=all_feature_ids)
         pre_em_total_counts[active_features] = active_total_counts.copy()
 
-
     theta_history = [active_total_counts.copy()]
-    momentum_start = getattr(args, 'momentum_start', 5)
+    momentum_start = getattr(args, "momentum_start", 5)
     momentum_failures = 0
     momentum_successes = 0
     transcript_assignments = None
@@ -1327,47 +1737,65 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
         d_metrics = {}
 
         if args.output_confidence:
-            logging.info(f"[{sample_name}] Tracking assignment entropy for confidence scores...")
+            logging.info(
+                f"[{sample_name}] Tracking assignment entropy for confidence scores..."
+            )
             t_assignments = track_assignment_entropy_parallel(
-                unique_mapper_groups, multimapper_classes, current_total,
+                unique_mapper_groups,
+                multimapper_classes,
+                current_total,
                 min_expression=args.confidence_min_expression,
-                threads_per_sample=threads_per_worker, sample_name=sample_name
+                threads_per_sample=threads_per_worker,
+                sample_name=sample_name,
             )
 
             logging.info(f"[{sample_name}] Calculating distinguishability metrics...")
-            expressed = set(current_total[current_total >= args.confidence_min_expression].index)
+            expressed = set(
+                current_total[current_total >= args.confidence_min_expression].index
+            )
             d_metrics = calculate_differential_confidence_parallel(
-                unique_mapper_groups, multimapper_classes, current_total, expressed,
-                gene_map=global_data.get('gene_map'), te_map=global_data.get('te_map'),
-                threads_per_sample=threads_per_worker, sample_name=sample_name
+                unique_mapper_groups,
+                multimapper_classes,
+                current_total,
+                expressed,
+                gene_map=global_data.get("gene_map"),
+                te_map=global_data.get("te_map"),
+                threads_per_sample=threads_per_worker,
+                sample_name=sample_name,
             )
 
         return current_total, final_unique, final_multi, t_assignments, d_metrics
 
     # Compute unique-evidence floors if enabled
     em_floors = None
-    if getattr(args, 'use_unique_floor', False):
-        floor_alpha_base = getattr(args, 'unique_floor_alpha', 0.5)
-        territory_alpha = getattr(args, 'territory_floor_alpha', None)
+    if getattr(args, "use_unique_floor", False):
+        floor_alpha_base = getattr(args, "unique_floor_alpha", 0.5)
+        territory_alpha = getattr(args, "territory_floor_alpha", None)
         if territory_alpha is None:
             territory_alpha = floor_alpha_base
-        junction_alpha = getattr(args, 'junction_floor_alpha', None)
+        junction_alpha = getattr(args, "junction_floor_alpha", None)
         if junction_alpha is None:
             junction_alpha = floor_alpha_base
-        floor_min_territory = getattr(args, 'unique_floor_min_territory', 50)
+        floor_min_territory = getattr(args, "unique_floor_min_territory", 50)
 
         # Junction catchment: region around a splice site where a read can witness it
         # PE: either mate can span the junction → 2 × (read_length - min_overhang)
         # SE: only one end → 1 × (read_length - min_overhang)
         min_overhang = 8
-        read_length = getattr(args, 'read_length', None)
+        read_length = getattr(args, "read_length", None)
         if read_length is None:
             # Auto-detect from cache (populated by EqC builder's Rust BAM scan)
-            read_length = sample_cache_data.get('median_read_length', None) if sample_cache_data else None
+            read_length = (
+                sample_cache_data.get("median_read_length", None)
+                if sample_cache_data
+                else None
+            )
             if read_length is None:
                 read_length = 150  # fallback default
-            logging.info(f"  [{sample_name}] Read length for junction catchment: {read_length}bp")
-        is_paired = getattr(args, 'paired_end', True)
+            logging.info(
+                f"  [{sample_name}] Read length for junction catchment: {read_length}bp"
+            )
+        is_paired = getattr(args, "paired_end", True)
         junction_catchment_per = (2 if is_paired else 1) * (read_length - min_overhang)
 
         # Sum reads in single-transcript EqCs (unique reads per transcript)
@@ -1377,7 +1805,9 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
                 unique_read_counts[feature_tuple[0]] += read_count
 
         # Get junction metrics for this sample (unique_junction_reads per transcript)
-        sample_junction_metrics = sample_cache_data.get('junction_metrics', {}) if sample_cache_data else {}
+        sample_junction_metrics = (
+            sample_cache_data.get("junction_metrics", {}) if sample_cache_data else {}
+        )
 
         # Compute floors: territory-based, junction-based, take max
         floor_dict = {}
@@ -1388,13 +1818,13 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
             if tid_int not in _transcript_info:
                 continue
             info = _transcript_info[tid_int]
-            L_eff = info.get('transcript_length', 0)
+            L_eff = info.get("transcript_length", 0)
             if L_eff <= 0 or k <= 0:
                 continue
 
             # --- Territory floor ---
             territory_floor = 0.0
-            L_u = info.get('unique_territory_bp', 0)
+            L_u = info.get("unique_territory_bp", 0)
             if L_u >= floor_min_territory:
                 rate_t = k / L_u
                 implied_t = rate_t * L_eff
@@ -1406,8 +1836,8 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
             junction_floor = 0.0
             jm = sample_junction_metrics.get(tid_int, None)
             if jm:
-                k_j = jm.get('unique_junction_reads', 0)
-                n_uniq_j = jm.get('n_unique_junctions', 0)
+                k_j = jm.get("unique_junction_reads", 0)
+                n_uniq_j = jm.get("n_unique_junctions", 0)
                 if k_j > 0 and n_uniq_j > 0:
                     catchment_j = n_uniq_j * junction_catchment_per
                     rate_j = k_j / catchment_j
@@ -1429,46 +1859,79 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
             for tid_int, floor_val in floor_dict.items():
                 if tid_int in em_floors.index:
                     em_floors[tid_int] = floor_val
-            alpha_str = f"territory_alpha={territory_alpha}, junction_alpha={junction_alpha}" if territory_alpha != junction_alpha else f"alpha={floor_alpha_base}"
-            logging.info(f"  [{sample_name}] Unique-evidence floors: {len(floor_dict)} transcripts "
-                         f"({alpha_str}, min_territory={floor_min_territory}bp)")
-            logging.info(f"  [{sample_name}]   Territory floors: {n_territory_floors}, "
-                         f"Junction floors: {n_junction_floors}, "
-                         f"Junction rescues (no territory): {n_junction_rescues}")
+            alpha_str = (
+                f"territory_alpha={territory_alpha}, junction_alpha={junction_alpha}"
+                if territory_alpha != junction_alpha
+                else f"alpha={floor_alpha_base}"
+            )
+            logging.info(
+                f"  [{sample_name}] Unique-evidence floors: {len(floor_dict)} transcripts "
+                f"({alpha_str}, min_territory={floor_min_territory}bp)"
+            )
+            logging.info(
+                f"  [{sample_name}]   Territory floors: {n_territory_floors}, "
+                f"Junction floors: {n_junction_floors}, "
+                f"Junction rescues (no territory): {n_junction_rescues}"
+            )
         else:
-            logging.info(f"  [{sample_name}] No unique-evidence floors computed (no qualifying transcripts)")
+            logging.info(
+                f"  [{sample_name}] No unique-evidence floors computed (no qualifying transcripts)"
+            )
 
     # Create pipeline context for EM iterations
     em_pipeline_context = {
-        'global_thresholds': global_data['global_thresholds'],
-        'gene_map': global_data.get('gene_map'),
-        'cached_results': {}
+        "global_thresholds": global_data["global_thresholds"],
+        "gene_map": global_data.get("gene_map"),
+        "cached_results": {},
     }
     for i in range(args.em_iterations):
-        previous_total = active_total_counts.copy()  
-        if i%5==0:
-            total_reads_in_groups = sum(count for group, count in unique_mapper_groups.items())
-            logging.info(f"[{sample_name}] Total reads in equivalence classes: {total_reads_in_groups}")
+        previous_total = active_total_counts.copy()
+        if i % 5 == 0:
+            total_reads_in_groups = sum(
+                count for group, count in unique_mapper_groups.items()
+            )
+            logging.info(
+                f"[{sample_name}] Total reads in equivalence classes: {total_reads_in_groups}"
+            )
         if i < momentum_start:
-            active_total_counts, active_final_unique, active_final_multi = standard_em_step(
-                active_total_counts, unique_mapper_groups, multimapper_classes, 
-                active_final_multi
+            active_total_counts, active_final_unique, active_final_multi = (
+                standard_em_step(
+                    active_total_counts,
+                    unique_mapper_groups,
+                    multimapper_classes,
+                    active_final_multi,
+                )
             )
             active_total_counts.name = sample_name
             logging.info(f"     [{sample_name}] Standard EM Iteration {i + 1}")
         else:
             try:
-                active_total_counts, active_final_unique, active_final_multi = grouped_momentum_acceleration(
-                    em_pipeline_context, theta_history, unique_mapper_groups, multimapper_classes, active_final_multi,
-                    momentum_scaling_values=args.momentum_scaling
+                active_total_counts, active_final_unique, active_final_multi = (
+                    grouped_momentum_acceleration(
+                        em_pipeline_context,
+                        theta_history,
+                        unique_mapper_groups,
+                        multimapper_classes,
+                        active_final_multi,
+                        momentum_scaling_values=args.momentum_scaling,
+                    )
                 )
                 active_total_counts.name = sample_name
                 momentum_successes += 1
-                logging.info(f"     [{sample_name}] Joint Momentum EM Iteration {i + 1}")
+                logging.info(
+                    f"     [{sample_name}] Joint Momentum EM Iteration {i + 1}"
+                )
             except Exception as e:
-                logging.warning(f"     [{sample_name}] Momentum failed ({e}), using standard EM")
-                active_total_counts, active_final_unique, active_final_multi = standard_em_step(
-                    active_total_counts, unique_mapper_groups, multimapper_classes, active_final_multi
+                logging.warning(
+                    f"     [{sample_name}] Momentum failed ({e}), using standard EM"
+                )
+                active_total_counts, active_final_unique, active_final_multi = (
+                    standard_em_step(
+                        active_total_counts,
+                        unique_mapper_groups,
+                        multimapper_classes,
+                        active_final_multi,
+                    )
                 )
                 active_total_counts.name = sample_name
                 momentum_failures += 1
@@ -1477,153 +1940,193 @@ def run_joint_em_for_sample_with_cache_encoded(args_tuple):
         if em_floors is not None:
             active_total_counts = active_total_counts.clip(lower=em_floors)
 
-        theta_history.append(active_total_counts.copy())  # FIXED: Use active_total_counts
+        theta_history.append(
+            active_total_counts.copy()
+        )  # FIXED: Use active_total_counts
         if len(theta_history) > 5:
             theta_history.pop(0)
-        
+
         if adaptive_convergence_check(active_total_counts, previous_total, i + 1):
             logging.info(f"[{sample_name}] Converged after {i + 1} iterations.")
-            logging.info(f"[{sample_name}] Momentum stats: {momentum_successes} successes, {momentum_failures} failures")
+            logging.info(
+                f"[{sample_name}] Momentum stats: {momentum_successes} successes, {momentum_failures} failures"
+            )
             break
         if i == args.em_iterations - 1:
-            logging.warning(f"[{sample_name}] Did not converge after {args.em_iterations} iterations.")
+            logging.warning(
+                f"[{sample_name}] Did not converge after {args.em_iterations} iterations."
+            )
             break
 
     # Log floor inflation (no renormalization — let downstream normalization absorb it)
     if em_floors is not None:
-        actual_reads = sum(count for _, count in unique_mapper_groups.items()) + \
-                       sum(count for _, count in multimapper_classes.items())
+        actual_reads = sum(count for _, count in unique_mapper_groups.items()) + sum(
+            count for _, count in multimapper_classes.items()
+        )
         actual_excess = active_total_counts.values.sum() - actual_reads
         if actual_excess > 0:
-            logging.info(f"  [{sample_name}] Floor inflation: {actual_excess:.0f} reads "
-                         f"({actual_excess/actual_reads*100:.2f}% of total)")
+            logging.info(
+                f"  [{sample_name}] Floor inflation: {actual_excess:.0f} reads "
+                f"({actual_excess/actual_reads*100:.2f}% of total)"
+            )
 
     # Finalize: expand active arrays to full size
-    current_total_counts, final_unique_counts, final_multimapper_counts, \
-        transcript_assignments, distinguishability_metrics = _finalize_em_results()
+    (
+        current_total_counts,
+        final_unique_counts,
+        final_multimapper_counts,
+        transcript_assignments,
+        distinguishability_metrics,
+    ) = _finalize_em_results()
 
     if args.output_confidence:
         # Calculate confidence metrics
         # Call external function with string IDs
         confidence_metrics = calculate_confidence_metrics(
-            transcript_assignments,   # Already integers
+            transcript_assignments,  # Already integers
             current_total_counts,
         )
     else:
         confidence_metrics = {}
-    
+
     final_unique_counts.name = sample_name
     final_multimapper_counts.name = sample_name
     current_total_counts.name = sample_name
-    
+
     junction_confidence_metrics = {}
 
     if args.output_confidence:
-        junction_evidence = sample_cache_data.get('junction_evidence', {})
-        junction_metrics = sample_cache_data.get('junction_metrics', {})
+        junction_evidence = sample_cache_data.get("junction_evidence", {})
+        junction_metrics = sample_cache_data.get("junction_metrics", {})
 
         if junction_metrics:
-            junction_confidence_metrics = calculate_junction_confidence_metrics_vectorized(
-                    junction_evidence,      # Already integers
-                    junction_metrics,       # Already integers
-                    current_total_counts    # Already integers
+            junction_confidence_metrics = (
+                calculate_junction_confidence_metrics_vectorized(
+                    junction_evidence,  # Already integers
+                    junction_metrics,  # Already integers
+                    current_total_counts,  # Already integers
+                )
             )
-            logging.info(f"[{sample_name}] Calculated junction confidence for {len(junction_confidence_metrics)} transcripts")
+            logging.info(
+                f"[{sample_name}] Calculated junction confidence for {len(junction_confidence_metrics)} transcripts"
+            )
 
-    
     # Clean up
     del unique_mapper_groups
     del multimapper_classes
     del theta_history[:-1]
     gc.collect()
-    
+
     # Return all results (still with integer IDs)
-    return (final_unique_counts, final_multimapper_counts, current_total_counts, 
-            confidence_metrics, distinguishability_metrics, junction_confidence_metrics, pre_em_total_counts, length_vector)
+    return (
+        final_unique_counts,
+        final_multimapper_counts,
+        current_total_counts,
+        confidence_metrics,
+        distinguishability_metrics,
+        junction_confidence_metrics,
+        pre_em_total_counts,
+        length_vector,
+    )
 
 
-def run_joint_em_pipeline_encoded(pipeline_context, args, temp_dir, 
-                                 string_to_int, int_to_string):
+def run_joint_em_pipeline_encoded(
+    pipeline_context, args, temp_dir, string_to_int, int_to_string
+):
     """Modified pipeline with integer ID encoding."""
-    
+
     # STEP 1: Calculate thresholds AND cache unique mapper results
     calculate_global_thresholds_and_cache_results_encoded(
-        pipeline_context, args.bams, args, temp_dir,
-        string_to_int, int_to_string,
+        pipeline_context,
+        args.bams,
+        args,
+        temp_dir,
+        string_to_int,
+        int_to_string,
     )
 
     if args.use_bins:
         # If the user provided a global binning file, we load it and
         # OVERWRITE the locally-calculated thresholds in the pipeline_context.
-        logging.info(f"--- Overwriting local thresholds with global ones from: {args.use_bins} ---")
+        logging.info(
+            f"--- Overwriting local thresholds with global ones from: {args.use_bins} ---"
+        )
         try:
-            with open(args.use_bins, 'r') as f:
+            with open(args.use_bins, "r") as f:
                 bin_data = json.load(f)
                 # over-write
-                pipeline_context['global_thresholds'] = bin_data['global_thresholds'] 
+                pipeline_context["global_thresholds"] = bin_data["global_thresholds"]
             logging.info("  Global thresholds loaded and applied successfully.")
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-            logging.error(f"FATAL: Failed to load or parse the binning JSON file. Error: {e}")
+            logging.error(
+                f"FATAL: Failed to load or parse the binning JSON file. Error: {e}"
+            )
             sys.exit(1)
     else:
         # If no global file is provided
         logging.info(f"----- Using locally-calculated -----")
 
-
-    if pipeline_context['global_thresholds'] is None:
-        logging.error("Failed to calculate or load global thresholds! Cannot proceed to EM.")
+    if pipeline_context["global_thresholds"] is None:
+        logging.error(
+            "Failed to calculate or load global thresholds! Cannot proceed to EM."
+        )
         sys.exit(1)
-    
+
     # STEP 2: Run EM pipeline using cached results
     logging.info("\n=== Running EM Pipeline with Cached Results ===")
     threads_per_worker = max(1, args.threads // len(args.bams))
     logging.info(f"  -> Allocating {threads_per_worker} threads per sample")
-    
+
     pool_args = []
     for bam in args.bams:
         sample_name = get_sample_name_from_bam(bam)
-        
-        sample_cache_data = pipeline_context['cached_results'].get(sample_name, {})
-        
+
+        sample_cache_data = pipeline_context["cached_results"].get(sample_name, {})
+
         global_data = {
-            'global_thresholds': pipeline_context['global_thresholds'],
-            'gene_map': pipeline_context.get('gene_map'),
-            'te_map': pipeline_context.get('te_map'),
-            'cache_manager': pipeline_context.get('cache_manager'),
+            "global_thresholds": pipeline_context["global_thresholds"],
+            "gene_map": pipeline_context.get("gene_map"),
+            "te_map": pipeline_context.get("te_map"),
+            "cache_manager": pipeline_context.get("cache_manager"),
         }
-        
-        pool_args.append((
-            sample_cache_data,
-            global_data,
-            bam, 
-            args, 
-            temp_dir, 
-            threads_per_worker
-        ))
-    
+
+        pool_args.append(
+            (sample_cache_data, global_data, bam, args, temp_dir, threads_per_worker)
+        )
+
     # Process with initialized workers
-    junction_int_to_string = pipeline_context['junction_int_to_string']
-    gene_map = pipeline_context['gene_map']
-    te_map = pipeline_context['te_map']
-    
+    junction_int_to_string = pipeline_context["junction_int_to_string"]
+    gene_map = pipeline_context["gene_map"]
+    te_map = pipeline_context["te_map"]
 
     with multiprocessing.Pool(
         processes=min(args.threads, len(args.bams)),
-        initializer=init_worker_downstream, 
-        initargs=(int_to_string, string_to_int, gene_map, te_map, junction_int_to_string, pipeline_context['transcript_info']) 
-        ) as pool:
+        initializer=init_worker_downstream,
+        initargs=(
+            int_to_string,
+            string_to_int,
+            gene_map,
+            te_map,
+            junction_int_to_string,
+            pipeline_context["transcript_info"],
+        ),
+    ) as pool:
         results = pool.map(run_joint_em_for_sample_with_cache_encoded, pool_args)
 
     # This is where you should add the cache cleanup:
 
     # Clean up cache - in light mode also drop junction_metrics (not needed without confidence output)
-    cleanup_keys = ['initial_unique_counts', 'modified_unique_counts',
-                    'unique_mapper_groups', 'junction_evidence',
-                    'fragment_length_hist']
-    if getattr(args, 'light', False):
-        cleanup_keys.append('junction_metrics')
-    for sample_name in pipeline_context['cached_results']:
-        sample_data = pipeline_context['cached_results'][sample_name]
+    cleanup_keys = [
+        "initial_unique_counts",
+        "modified_unique_counts",
+        "unique_mapper_groups",
+        "junction_evidence",
+        "fragment_length_hist",
+    ]
+    if getattr(args, "light", False):
+        cleanup_keys.append("junction_metrics")
+    for sample_name in pipeline_context["cached_results"]:
+        sample_data = pipeline_context["cached_results"][sample_name]
         for key in cleanup_keys:
             if key in sample_data:
                 del sample_data[key]
@@ -1637,15 +2140,15 @@ def run_joint_em_pipeline_encoded(pipeline_context, args, temp_dir,
     junction_confidence_results = [res[5] for res in results]
     pre_em_total_counts = [res[6] for res in results]
 
-    for sample_name, sample_data in pipeline_context['cached_results'].items():
-    # Delete equivalence classes - not needed after EM
-        if 'unique_mapper_groups' in sample_data:
-            del sample_data['unique_mapper_groups']
-        if 'multimapper_classes' in sample_data:   
-            del sample_data['multimapper_classes']
+    for sample_name, sample_data in pipeline_context["cached_results"].items():
+        # Delete equivalence classes - not needed after EM
+        if "unique_mapper_groups" in sample_data:
+            del sample_data["unique_mapper_groups"]
+        if "multimapper_classes" in sample_data:
+            del sample_data["multimapper_classes"]
 
     gc.collect()
-    
+
     # STEP 3: Process results - delay decoding for performance
     logging.info("\n=== PROCESSING RESULTS ===")
 
@@ -1655,226 +2158,399 @@ def run_joint_em_pipeline_encoded(pipeline_context, args, temp_dir,
     final_total_counts = pd.concat(total_results, axis=1)
     # Clean up individual results to free memory
 
-    sample_length_vectors = { sample_name: res[7] 
-                            for sample_name, res in zip(final_unique_counts.columns, results)
-                    }
+    sample_length_vectors = {
+        sample_name: res[7]
+        for sample_name, res in zip(final_unique_counts.columns, results)
+    }
     del unique_results
-    del multimapper_results  
+    del multimapper_results
     gc.collect()
 
     # Save standard outputs - decode only when writing files
     if args.verbose_output:
         decoded_unique = decode_transcript_ids(final_unique_counts, int_to_string)
-        decoded_unique.to_csv(f"{args.prefix}_unique_mapper_EM_counts.tsv.gz", sep='\t', compression={'method': 'gzip', 'compresslevel': 1})
+        decoded_unique.to_csv(
+            f"{args.prefix}_unique_mapper_EM_counts.tsv.gz",
+            sep="\t",
+            compression={"method": "gzip", "compresslevel": 1},
+        )
         del decoded_unique
 
         decoded_multi = decode_transcript_ids(final_multimapper_counts, int_to_string)
-        decoded_multi.to_csv(f"{args.prefix}_multimapper_EM_counts.tsv.gz", sep='\t', compression={'method': 'gzip', 'compresslevel': 1})
+        decoded_multi.to_csv(
+            f"{args.prefix}_multimapper_EM_counts.tsv.gz",
+            sep="\t",
+            compression={"method": "gzip", "compresslevel": 1},
+        )
         del decoded_multi
         gc.collect()
 
     # Decode total counts for main output
     decoded_total_counts = decode_transcript_ids(final_total_counts, int_to_string)
-    decoded_total_counts.round(6).to_csv(f"{args.prefix}_total_EM_counts.tsv", sep='\t')
-    
+    decoded_total_counts.round(6).to_csv(f"{args.prefix}_total_EM_counts.tsv", sep="\t")
+
     # STEP 4: Save pipeline metadata
     threshold_info = {
-        'global_thresholds': pipeline_context['global_thresholds'],
-        'samples_processed': [get_sample_name_from_bam(bam) for bam in args.bams],
-        'momentum_scaling': {'low': args.momentum_scaling[0], 'medium': args.momentum_scaling[1], 'high': args.momentum_scaling[2]},
-        'convergence_threshold': 0.0001,
-        'optimization_method': 'cached_results_with_integer_ids',
-        'cached_samples': len(pipeline_context['cached_results']),
-        'junction_aware': True,
-        'junction_weight': getattr(args, 'junction_weight', 1.0),
-        'junction_decay_exponent': getattr(args, 'junction_decay_exponent', 1.0),
-        'junction_metrics_tracked': True,
-        'memory_optimized': True,
-        'integer_id_mapping': True,
-        'total_transcript_ids': len(int_to_string),
+        "global_thresholds": pipeline_context["global_thresholds"],
+        "samples_processed": [get_sample_name_from_bam(bam) for bam in args.bams],
+        "momentum_scaling": {
+            "low": args.momentum_scaling[0],
+            "medium": args.momentum_scaling[1],
+            "high": args.momentum_scaling[2],
+        },
+        "convergence_threshold": 0.0001,
+        "optimization_method": "cached_results_with_integer_ids",
+        "cached_samples": len(pipeline_context["cached_results"]),
+        "junction_aware": True,
+        "junction_weight": getattr(args, "junction_weight", 1.0),
+        "junction_decay_exponent": getattr(args, "junction_decay_exponent", 1.0),
+        "junction_metrics_tracked": True,
+        "memory_optimized": True,
+        "integer_id_mapping": True,
+        "total_transcript_ids": len(int_to_string),
     }
-    
+
     threshold_path = f"{args.prefix}_joint_binning_info.json"
-    with open(threshold_path, 'w') as f:
+    with open(threshold_path, "w") as f:
         json.dump(threshold_info, f, indent=2)
-    
+
     # Clean up
-    pipeline_context['cached_results'].clear()
-    
+    pipeline_context["cached_results"].clear()
+
     logging.info(f"✅ Optimized pipeline complete")
-    
-    return (final_unique_counts, final_multimapper_counts, final_total_counts, 
-            confidence_results, distinguishability_results, junction_confidence_results, pre_em_total_counts, sample_length_vectors)
+
+    return (
+        final_unique_counts,
+        final_multimapper_counts,
+        final_total_counts,
+        confidence_results,
+        distinguishability_results,
+        junction_confidence_results,
+        pre_em_total_counts,
+        sample_length_vectors,
+    )
+
 
 def build_argument_parser():
     """Build and return the MAJEC pipeline argument parser."""
     parser = argparse.ArgumentParser(
         description="MAJEC - Momentum-Accelerated Junction-Enhanced Counting\n"
-                    "Requires a preprocessed annotation file created by majec_precompute_annotations",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        "Requires a preprocessed annotation file created by majec_precompute_annotations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--version', action='version',
-                        version=f"MAJEC {MAJEC_VERSION}")
+    parser.add_argument("--version", action="version", version=f"MAJEC {MAJEC_VERSION}")
 
     # --- Group: Required I/O ---
-    io_group = parser.add_argument_group('Required Input/Output')
-    io_group.add_argument('--annotation',
-                        help="Preprocessed annotation file (.pkl.gz) created by majec_precompute_annotations")
-    io_group.add_argument('--bams', nargs='+',
-                        help="List of coordinate-sorted input BAM files")
-    io_group.add_argument('--prefix', default="MAJEC_output",
-                        help="Output file prefix (default: MAJEC_output)")
+    io_group = parser.add_argument_group("Required Input/Output")
+    io_group.add_argument(
+        "--annotation",
+        help="Preprocessed annotation file (.pkl.gz) created by majec_precompute_annotations",
+    )
+    io_group.add_argument(
+        "--bams", nargs="+", help="List of coordinate-sorted input BAM files"
+    )
+    io_group.add_argument(
+        "--prefix",
+        default="MAJEC_output",
+        help="Output file prefix (default: MAJEC_output)",
+    )
 
     # --- Group: Core Pipeline Settings ---
-    core_group = parser.add_argument_group('Core Pipeline Settings')
-    core_group.add_argument('--strandedness', default=0, type=int, choices=[0, 1, 2],
-                        help="Strand specificity (default: 0)")
-    core_group.add_argument('--threads', default=8, type=int,
-                        help="Total number of threads to use (default: 8)")
-    core_group.add_argument('--paired_end', action='store_true',
-                        help="Data is paired-end")
-    core_group.add_argument('--tempdir',
-                        help="Directory for temporary files")
-    core_group.add_argument('--use_bins', type=str, default=None,
-                        help="Use pre-calculated expression thresholds from a specified JSON file for cohort processing.")
-    core_group.add_argument('--config', help='Path to a JSON configuration file. Command-line options override file settings.')
+    core_group = parser.add_argument_group("Core Pipeline Settings")
+    core_group.add_argument(
+        "--strandedness",
+        default=0,
+        type=int,
+        choices=[0, 1, 2],
+        help="Strand specificity (default: 0)",
+    )
+    core_group.add_argument(
+        "--threads",
+        default=8,
+        type=int,
+        help="Total number of threads to use (default: 8)",
+    )
+    core_group.add_argument(
+        "--paired_end", action="store_true", help="Data is paired-end"
+    )
+    core_group.add_argument("--tempdir", help="Directory for temporary files")
+    core_group.add_argument(
+        "--use_bins",
+        type=str,
+        default=None,
+        help="Use pre-calculated expression thresholds from a specified JSON file for cohort processing.",
+    )
+    core_group.add_argument(
+        "--config",
+        help="Path to a JSON configuration file. Command-line options override file settings.",
+    )
 
     # --- Group: EM Algorithm Parameters ---
-    em_group = parser.add_argument_group('EM Algorithm Parameters')
-    em_group.add_argument('--em_iterations', default=150, type=int,
-                        help="Maximum iterations for EM (default: 150)")
-    em_group.add_argument('--momentum_start', default=4, type=int,
-                        help="Iteration to start momentum acceleration (default: 4)")
-    em_group.add_argument('--momentum_scaling', nargs=3, type=float, default=[1.5, 1.0, 0.7],
-                        metavar=('LOW', 'MEDIUM', 'HIGH'),
-                        help="Momentum scaling factors for expression groups (default: 1.5 1.0 0.7)")
+    em_group = parser.add_argument_group("EM Algorithm Parameters")
+    em_group.add_argument(
+        "--em_iterations",
+        default=150,
+        type=int,
+        help="Maximum iterations for EM (default: 150)",
+    )
+    em_group.add_argument(
+        "--momentum_start",
+        default=4,
+        type=int,
+        help="Iteration to start momentum acceleration (default: 4)",
+    )
+    em_group.add_argument(
+        "--momentum_scaling",
+        nargs=3,
+        type=float,
+        default=[1.5, 1.0, 0.7],
+        metavar=("LOW", "MEDIUM", "HIGH"),
+        help="Momentum scaling factors for expression groups (default: 1.5 1.0 0.7)",
+    )
     # Experimental, kept working but hidden from --help (v2 release decision 6):
     # the unique-evidence floor family and AS-weighted multimapper scoring. Both
     # are off by default and neither improved accuracy in the v2 benchmarks.
-    em_group.add_argument('--use_unique_floor', action='store_true',
-                        help=argparse.SUPPRESS)  # unique-evidence abundance floor in EM
-    em_group.add_argument('--unique_floor_alpha', default=0.5, type=float,
-                        help=argparse.SUPPRESS)  # base shrinkage factor for the floor
-    em_group.add_argument('--territory_floor_alpha', default=None, type=float,
-                        help=argparse.SUPPRESS)  # override alpha for the territory floor
-    em_group.add_argument('--junction_floor_alpha', default=None, type=float,
-                        help=argparse.SUPPRESS)  # override alpha for the junction floor
-    em_group.add_argument('--unique_floor_min_territory', default=50, type=int,
-                        help=argparse.SUPPRESS)  # minimum unique territory (bp) for the floor
-    em_group.add_argument('--read_length', default=None, type=int,
-                        help=argparse.SUPPRESS)  # floor junction catchment; auto-detected from the BAM
-    em_group.add_argument('--use_alignment_scoring', action='store_true',
-                        help=argparse.SUPPRESS)  # AS-tag softmax weighting of multimapper classes
-    em_group.add_argument('--as_temperature', default=10.0, type=float,
-                        help=argparse.SUPPRESS)  # softmax temperature for AS weighting
+    em_group.add_argument(
+        "--use_unique_floor", action="store_true", help=argparse.SUPPRESS
+    )  # unique-evidence abundance floor in EM
+    em_group.add_argument(
+        "--unique_floor_alpha", default=0.5, type=float, help=argparse.SUPPRESS
+    )  # base shrinkage factor for the floor
+    em_group.add_argument(
+        "--territory_floor_alpha", default=None, type=float, help=argparse.SUPPRESS
+    )  # override alpha for the territory floor
+    em_group.add_argument(
+        "--junction_floor_alpha", default=None, type=float, help=argparse.SUPPRESS
+    )  # override alpha for the junction floor
+    em_group.add_argument(
+        "--unique_floor_min_territory", default=50, type=int, help=argparse.SUPPRESS
+    )  # minimum unique territory (bp) for the floor
+    em_group.add_argument(
+        "--read_length", default=None, type=int, help=argparse.SUPPRESS
+    )  # floor junction catchment; auto-detected from the BAM
+    em_group.add_argument(
+        "--use_alignment_scoring", action="store_true", help=argparse.SUPPRESS
+    )  # AS-tag softmax weighting of multimapper classes
+    em_group.add_argument(
+        "--as_temperature", default=10.0, type=float, help=argparse.SUPPRESS
+    )  # softmax temperature for AS weighting
 
     # --- Group: Aligners that omit NH (minimap2 / long reads) ---
     lr_group = parser.add_argument_group(
-        'No-NH aligners: minimap2 / long reads (experimental)',
+        "No-NH aligners: minimap2 / long reads (experimental)",
         "MAJEC reads alignment multiplicity from the NH tag, which STAR and HISAT2 "
         "write and minimap2 does not. When NH is absent, multiplicity is derived "
         "from read names instead, so multimapping reads reach the EM. Long-read "
         "quantification is experimental: it has been checked for correctness on ONT "
         "libraries, but its accuracy against dedicated long-read quantifiers has not "
         "been established. These options need the compiled majec_core builder; the "
-        "pure-Python builder rejects them rather than ignoring them.")
-    lr_group.add_argument('--derive_multiplicity', default='auto',
-                        choices=['auto', 'on', 'off'],
-                        help="Derive read multiplicity from read names instead of NH. "
-                             "'auto' switches on only if none of the first 10,000 mapped "
-                             "records carries NH, so short-read runs are unaffected; "
-                             "'on' forces it; 'off' disables it (default: auto)")
-    lr_group.add_argument('--lr_score_ratio', default=0.0, type=float,
-                        help="Keep only alignments scoring within this fraction of the read's "
-                             "best AS (default: 0, keep every reported alignment). Raising it "
-                             "assigns each read to whichever locus scores highest, which on "
-                             "noisy long reads can move reads between a gene and its pseudogene "
-                             "copies")
-    lr_group.add_argument('--lr_min_mapq', default=None, type=int,
-                        help="MAPQ floor for reads that resolve as unique in derive mode "
-                             "(default: 0, off). minimap2 lowers MAPQ when near-equal "
-                             "alternatives exist, so a floor removes those reads instead of "
-                             "letting the EM resolve them")
+        "pure-Python builder rejects them rather than ignoring them.",
+    )
+    lr_group.add_argument(
+        "--derive_multiplicity",
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="Derive read multiplicity from read names instead of NH. "
+        "'auto' switches on only if none of the first 10,000 mapped "
+        "records carries NH, so short-read runs are unaffected; "
+        "'on' forces it; 'off' disables it (default: auto)",
+    )
+    lr_group.add_argument(
+        "--lr_score_ratio",
+        default=0.0,
+        type=float,
+        help="Keep only alignments scoring within this fraction of the read's "
+        "best AS (default: 0, keep every reported alignment). Raising it "
+        "assigns each read to whichever locus scores highest, which on "
+        "noisy long reads can move reads between a gene and its pseudogene "
+        "copies",
+    )
+    lr_group.add_argument(
+        "--lr_min_mapq",
+        default=None,
+        type=int,
+        help="MAPQ floor for reads that resolve as unique in derive mode "
+        "(default: 0, off). minimap2 lowers MAPQ when near-equal "
+        "alternatives exist, so a floor removes those reads instead of "
+        "letting the EM resolve them",
+    )
 
     # --- Group: Priors & Evidence Penalties ---
-    priors_group = parser.add_argument_group('Evidence Priors & Penalties')
-    priors_group.add_argument('--junction_weight', default=3.0, type=float,
-                        help="Weight for unique junction evidence (default: 3.0)")
-    priors_group.add_argument('--junction_decay_exponent', type=float, default=1.0,
-                        help="Exponent to penalize shared junctions (default: 1.0)")
-    priors_group.add_argument('--use_tsl_penalty', action='store_true',
-                        help="Apply penalties based on Transcript Support Level (TSL)")
-    priors_group.add_argument('--tsl_penalty_values', type=str,
-                        help="Custom TSL penalties as JSON string, e.g. '{\"1\":1.0,\"2\":0.8}'")
-    priors_group.add_argument('--use_junction_completeness', action='store_true',
-                        help="Penalize transcripts with incomplete junction evidence")
-    priors_group.add_argument('--junction_completeness_min_score', type=float, default=0.0001,
-                        help="Minimum completeness score to avoid zeroing transcripts (default: 0.0001)")
-    priors_group.add_argument('--junction_completeness_overdispersion', type=float, default=0.05,
-                        help="Overdispersion parameter for junction variance model (default: 0.05)")
-    priors_group.add_argument('--library_type', choices=['dT', 'polyA', 'random', 'none'], default='WARNING_UNSPECIFIED',
-                        help='Library preparation method; required with --terminal_relax')
-    priors_group.add_argument('--terminal_relax', action='store_true',
-                        help="Relaxes completeness penalty at transcript termini based on library type")
-    priors_group.add_argument('--terminal_recovery_rate', type=float, default=2,
-                        help="Controls recovery steepness for terminal relaxation (default: 2)")
-    priors_group.add_argument('--use_subset_penalty', action='store_true',
-                        help="Penalize subset isoforms based on superset evidence")
-    priors_group.add_argument('--subset_evidence_threshold', type=float, default=1.25,
-                        help="Factor to adjust evidence required to NOT penalize a subset isoform (default: 1.25)")
-    priors_group.add_argument('--subset_penalty_min', type=float, default=0.001,
-                        help="Minimum penalty factor for subset isoforms (default: 0.001)")
-    priors_group.add_argument('--subset_penalty_overdispersion', type=float, default=0.1,
-                        help="Overdispersion for subset penalty variance model (default: 0.1)")
+    priors_group = parser.add_argument_group("Evidence Priors & Penalties")
+    priors_group.add_argument(
+        "--junction_weight",
+        default=3.0,
+        type=float,
+        help="Weight for unique junction evidence (default: 3.0)",
+    )
+    priors_group.add_argument(
+        "--junction_decay_exponent",
+        type=float,
+        default=1.0,
+        help="Exponent to penalize shared junctions (default: 1.0)",
+    )
+    priors_group.add_argument(
+        "--use_tsl_penalty",
+        action="store_true",
+        help="Apply penalties based on Transcript Support Level (TSL)",
+    )
+    priors_group.add_argument(
+        "--tsl_penalty_values",
+        type=str,
+        help='Custom TSL penalties as JSON string, e.g. \'{"1":1.0,"2":0.8}\'',
+    )
+    priors_group.add_argument(
+        "--use_junction_completeness",
+        action="store_true",
+        help="Penalize transcripts with incomplete junction evidence",
+    )
+    priors_group.add_argument(
+        "--junction_completeness_min_score",
+        type=float,
+        default=0.0001,
+        help="Minimum completeness score to avoid zeroing transcripts (default: 0.0001)",
+    )
+    priors_group.add_argument(
+        "--junction_completeness_overdispersion",
+        type=float,
+        default=0.05,
+        help="Overdispersion parameter for junction variance model (default: 0.05)",
+    )
+    priors_group.add_argument(
+        "--library_type",
+        choices=["dT", "polyA", "random", "none"],
+        default="WARNING_UNSPECIFIED",
+        help="Library preparation method; required with --terminal_relax",
+    )
+    priors_group.add_argument(
+        "--terminal_relax",
+        action="store_true",
+        help="Relaxes completeness penalty at transcript termini based on library type",
+    )
+    priors_group.add_argument(
+        "--terminal_recovery_rate",
+        type=float,
+        default=2,
+        help="Controls recovery steepness for terminal relaxation (default: 2)",
+    )
+    priors_group.add_argument(
+        "--use_subset_penalty",
+        action="store_true",
+        help="Penalize subset isoforms based on superset evidence",
+    )
+    priors_group.add_argument(
+        "--subset_evidence_threshold",
+        type=float,
+        default=1.25,
+        help="Factor to adjust evidence required to NOT penalize a subset isoform (default: 1.25)",
+    )
+    priors_group.add_argument(
+        "--subset_penalty_min",
+        type=float,
+        default=0.001,
+        help="Minimum penalty factor for subset isoforms (default: 0.001)",
+    )
+    priors_group.add_argument(
+        "--subset_penalty_overdispersion",
+        type=float,
+        default=0.1,
+        help="Overdispersion for subset penalty variance model (default: 0.1)",
+    )
 
     # --- Group: Length Scaling & TPM ---
-    length_group = parser.add_argument_group('Length Scaling & TPM Calculation')
-    length_group.add_argument('--output_tpm', action='store_true',
-                        help="Calculate and output TPM values in addition to counts. Effective "
-                             "lengths use the fragment length distribution measured during the "
-                             "BAM scan; neither option below is needed for paired-end data.")
-    length_group.add_argument('--frag_stats_dir', type=str, default=None,
-                        help="Override: directory of JSON fragment length statistics from "
-                             "majec_calc_frag_len (estimated from genomic TLEN), used instead "
-                             "of the distribution measured during the scan. Mainly useful for "
-                             "reproducing runs made with earlier versions.")
-    length_group.add_argument('--mean_fragment_length', type=float, default=None,
-                        help="Override: a single global mean fragment length for all samples. "
-                             "Useful for single-end data, where fragment lengths cannot be "
-                             "measured from the BAM.")
+    length_group = parser.add_argument_group("Length Scaling & TPM Calculation")
+    length_group.add_argument(
+        "--output_tpm",
+        action="store_true",
+        help="Calculate and output TPM values in addition to counts. Effective "
+        "lengths use the fragment length distribution measured during the "
+        "BAM scan; neither option below is needed for paired-end data.",
+    )
+    length_group.add_argument(
+        "--frag_stats_dir",
+        type=str,
+        default=None,
+        help="Override: directory of JSON fragment length statistics from "
+        "majec_calc_frag_len (estimated from genomic TLEN), used instead "
+        "of the distribution measured during the scan. Mainly useful for "
+        "reproducing runs made with earlier versions.",
+    )
+    length_group.add_argument(
+        "--mean_fragment_length",
+        type=float,
+        default=None,
+        help="Override: a single global mean fragment length for all samples. "
+        "Useful for single-end data, where fragment lengths cannot be "
+        "measured from the BAM.",
+    )
 
     # --- Group: Confidence & Output Settings ---
-    output_group = parser.add_argument_group('Confidence & Output Settings')
-    output_group.add_argument('--output_confidence', action='store_true',
-                        help="Output confidence metrics based on assignment entropy")
-    output_group.add_argument('--confidence_min_expression', type=float, default=1.0,
-                        help="Minimum expression level for confidence calculations (default: 1.0)")
-    output_group.add_argument('--analyze_competition', action='store_true',
-                        help="Analyze and report transcript competition patterns")
-    output_group.add_argument('--calculate_group_confidence', action='store_true',
-                        help="Calculate confidence metrics for aggregated gene/TE groups")
-    output_group.add_argument('--verbose_output', action='store_true',
-                        help="Generate all detailed breakdown and intermediate files")
-    output_group.add_argument('--dump_em_classes', action='store_true',
-                        help="Save EM equivalency classes for debugging")
-    output_group.add_argument('--te_coordinates', action='store_true',
-                        help="Write {prefix}_TE_locus_coordinates.tsv mapping each individual TE "
-                             "locus to its chr/start/end/strand and subfamily. Off by default "
-                             "(this table has one row per TE locus, ~4.7M rows / ~260MB for hg38 rmsk).")
-    output_group.add_argument('--light', action='store_true',
-                        help="Light mode: skip prior tracking, confidence metrics, and verbose outputs "
-                             "for reduced memory usage and faster execution")
+    output_group = parser.add_argument_group("Confidence & Output Settings")
+    output_group.add_argument(
+        "--output_confidence",
+        action="store_true",
+        help="Output confidence metrics based on assignment entropy",
+    )
+    output_group.add_argument(
+        "--confidence_min_expression",
+        type=float,
+        default=1.0,
+        help="Minimum expression level for confidence calculations (default: 1.0)",
+    )
+    output_group.add_argument(
+        "--analyze_competition",
+        action="store_true",
+        help="Analyze and report transcript competition patterns",
+    )
+    output_group.add_argument(
+        "--calculate_group_confidence",
+        action="store_true",
+        help="Calculate confidence metrics for aggregated gene/TE groups",
+    )
+    output_group.add_argument(
+        "--verbose_output",
+        action="store_true",
+        help="Generate all detailed breakdown and intermediate files",
+    )
+    output_group.add_argument(
+        "--dump_em_classes",
+        action="store_true",
+        help="Save EM equivalency classes for debugging",
+    )
+    output_group.add_argument(
+        "--te_coordinates",
+        action="store_true",
+        help="Write {prefix}_TE_locus_coordinates.tsv mapping each individual TE "
+        "locus to its chr/start/end/strand and subfamily. Off by default "
+        "(this table has one row per TE locus, ~4.7M rows / ~260MB for hg38 rmsk).",
+    )
+    output_group.add_argument(
+        "--light",
+        action="store_true",
+        help="Light mode: skip prior tracking, confidence metrics, and verbose outputs "
+        "for reduced memory usage and faster execution",
+    )
 
     # --- Group: Caching ---
-    cache_group = parser.add_argument_group('Caching')
-    cache_group.add_argument('--use_cache', action='store_true',
-                        help='Use cached EqC results if available')
-    cache_group.add_argument('--cache_dir', default='pipeline_cache',
-                        help='Directory for cache files (default: pipeline_cache)')
-    cache_group.add_argument('--rebuild_cache', action='store_true',
-                        help='Force rebuild of cache even if valid')
-    cache_group.add_argument('--read_only_cache', action='store_true',
-                        help="Use cache in read-only mode; safer for batch parameter sweeps")
+    cache_group = parser.add_argument_group("Caching")
+    cache_group.add_argument(
+        "--use_cache", action="store_true", help="Use cached EqC results if available"
+    )
+    cache_group.add_argument(
+        "--cache_dir",
+        default="pipeline_cache",
+        help="Directory for cache files (default: pipeline_cache)",
+    )
+    cache_group.add_argument(
+        "--rebuild_cache",
+        action="store_true",
+        help="Force rebuild of cache even if valid",
+    )
+    cache_group.add_argument(
+        "--read_only_cache",
+        action="store_true",
+        help="Use cache in read-only mode; safer for batch parameter sweeps",
+    )
 
     return parser
 
@@ -1885,10 +2561,12 @@ def parse_args_with_config(parser):
 
     if partial_args.config:
         try:
-            with open(partial_args.config, 'r') as f:
+            with open(partial_args.config, "r") as f:
                 config_values = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            parser.error(f"Error reading or parsing config file '{partial_args.config}': {e}")
+            parser.error(
+                f"Error reading or parsing config file '{partial_args.config}': {e}"
+            )
         parser.set_defaults(**config_values)
 
     args = parser.parse_args(sys.argv[1:])
@@ -1913,7 +2591,9 @@ def validate_args(args):
             sys.exit(1)
 
     if args.frag_stats_dir and args.mean_fragment_length:
-        logging.error("FATAL: --frag_stats_dir and --mean_fragment_length are mutually exclusive.")
+        logging.error(
+            "FATAL: --frag_stats_dir and --mean_fragment_length are mutually exclusive."
+        )
         sys.exit(1)
 
     # The no-NH options are implemented in the Rust core only. Caught here as
@@ -1921,17 +2601,18 @@ def validate_args(args):
     # finding out after the annotation has been parsed.
     if not RUST_AVAILABLE:
         lr_asked = []
-        if getattr(args, 'derive_multiplicity', 'auto') == 'on':
-            lr_asked.append('--derive_multiplicity on')
-        if getattr(args, 'lr_score_ratio', 0.0):
-            lr_asked.append(f'--lr_score_ratio {args.lr_score_ratio}')
-        if getattr(args, 'lr_min_mapq', None):
-            lr_asked.append(f'--lr_min_mapq {args.lr_min_mapq}')
+        if getattr(args, "derive_multiplicity", "auto") == "on":
+            lr_asked.append("--derive_multiplicity on")
+        if getattr(args, "lr_score_ratio", 0.0):
+            lr_asked.append(f"--lr_score_ratio {args.lr_score_ratio}")
+        if getattr(args, "lr_min_mapq", None):
+            lr_asked.append(f"--lr_min_mapq {args.lr_min_mapq}")
         if lr_asked:
             logging.error(
                 f"FATAL: {', '.join(lr_asked)} requires the compiled majec_core "
                 "extension, which is not installed. The pure-Python fallback reads "
-                "multiplicity off the NH tag only.")
+                "multiplicity off the NH tag only."
+            )
             sys.exit(1)
 
     if args.tsl_penalty_values:
@@ -1941,41 +2622,62 @@ def validate_args(args):
             logging.error("Invalid JSON for --tsl_penalty_values")
             sys.exit(1)
 
-    if args.terminal_relax and args.library_type == 'WARNING_UNSPECIFIED':
-        logging.error("--terminal_relax specified but no --library_type provided. "
-                      "Please specify --library_type or remove --terminal_relax")
+    if args.terminal_relax and args.library_type == "WARNING_UNSPECIFIED":
+        logging.error(
+            "--terminal_relax specified but no --library_type provided. "
+            "Please specify --library_type or remove --terminal_relax"
+        )
         sys.exit(1)
 
     if args.calculate_group_confidence and not args.output_confidence:
-        logging.warning("--calculate_group_confidence requires --output_confidence; disabling group confidence")
+        logging.warning(
+            "--calculate_group_confidence requires --output_confidence; disabling group confidence"
+        )
         args.calculate_group_confidence = False
 
-    if getattr(args, 'analyze_competition', False) and not getattr(args, 'output_confidence', False):
-        logging.warning("--analyze_competition requires --output_confidence; disabling competition analysis")
+    if getattr(args, "analyze_competition", False) and not getattr(
+        args, "output_confidence", False
+    ):
+        logging.warning(
+            "--analyze_competition requires --output_confidence; disabling competition analysis"
+        )
         args.analyze_competition = False
 
-    if getattr(args, 'light', False):
+    if getattr(args, "light", False):
         overridden = []
-        for flag in ['verbose_output', 'output_confidence', 'analyze_competition',
-                      'calculate_group_confidence', 'dump_em_classes']:
+        for flag in [
+            "verbose_output",
+            "output_confidence",
+            "analyze_competition",
+            "calculate_group_confidence",
+            "dump_em_classes",
+        ]:
             if getattr(args, flag, False):
-                overridden.append(f'--{flag}')
+                overridden.append(f"--{flag}")
                 setattr(args, flag, False)
         if overridden:
             logging.warning(f"--light mode: disabling {', '.join(overridden)}")
-        logging.info("Light mode enabled: skipping prior tracking, confidence metrics, and verbose outputs")
+        logging.info(
+            "Light mode enabled: skipping prior tracking, confidence metrics, and verbose outputs"
+        )
 
     if args.output_tpm:
         # The EqC builder measures the fragment distribution during its BAM scan,
         # so --frag_stats_dir is no longer the only source; the per-sample source
         # actually used is reported by prepare_length_vector.
         if args.frag_stats_dir:
-            logging.info(f"Using fragment length statistics from directory: {args.frag_stats_dir}")
+            logging.info(
+                f"Using fragment length statistics from directory: {args.frag_stats_dir}"
+            )
         elif args.mean_fragment_length:
-            logging.info(f"Using fixed fragment length {args.mean_fragment_length} for normalization.")
+            logging.info(
+                f"Using fixed fragment length {args.mean_fragment_length} for normalization."
+            )
         else:
-            logging.info("Effective lengths will use the fragment distribution measured "
-                         "during the BAM scan.")
+            logging.info(
+                "Effective lengths will use the fragment distribution measured "
+                "during the BAM scan."
+            )
 
 
 def calculate_tpm(final_counts, sample_length_vectors):
@@ -2002,12 +2704,16 @@ def main():
     logging.info(f" MAJEC version: {MAJEC_VERSION}")
     eqc_builder_info = builder_provenance()
     if RUST_AVAILABLE:
-        logging.info(f" EqC builder: Rust majec_core {eqc_builder_info['majec_core_version']} "
-                     f"(sha256 {str(eqc_builder_info['majec_core_sha256'])[:16]})")
+        logging.info(
+            f" EqC builder: Rust majec_core {eqc_builder_info['majec_core_version']} "
+            f"(sha256 {str(eqc_builder_info['majec_core_sha256'])[:16]})"
+        )
     else:
-        logging.warning(" EqC builder: pure-Python pysam fallback (majec_core not installed). "
-                        "Results are the same; the BAM scan is roughly 6x slower. "
-                        "Install majec-core for the compiled builder.")
+        logging.warning(
+            " EqC builder: pure-Python pysam fallback (majec_core not installed). "
+            "Results are the same; the BAM scan is roughly 6x slower. "
+            "Install majec-core for the compiled builder."
+        )
     logging.info(f" Execution command:")
     logging.info(f"  {command_string}")
     logging.info(f"Processing {len(args.bams)} BAM files with {args.threads} threads.")
@@ -2018,94 +2724,125 @@ def main():
     validate_args(args)
 
     try:
-        (string_to_int, int_to_string, junction_string_to_int, junction_int_to_string, gene_map, te_map,
-         junction_map, transcript_junction_order, transcript_info,
-         transcript_expected_junctions, subset_relationships,
-         splice_competitor_map, metadata,
-         exon_index, junction_unstranded) = load_preprocessed_annotations(args.annotation)
+        (
+            string_to_int,
+            int_to_string,
+            junction_string_to_int,
+            junction_int_to_string,
+            gene_map,
+            te_map,
+            junction_map,
+            transcript_junction_order,
+            transcript_info,
+            transcript_expected_junctions,
+            subset_relationships,
+            splice_competitor_map,
+            metadata,
+            exon_index,
+            junction_unstranded,
+        ) = load_preprocessed_annotations(args.annotation)
     except Exception as e:
         logging.error(f"Failed to load annotation file: {e}")
         sys.exit(1)
-    
+
     logging.info("Annotation & Feature Status:")
     logging.info(f"  -> Loaded annotation: {os.path.basename(args.annotation)}")
     logging.info(f"  -> Total transcripts in annotation: {metadata['n_transcripts']:,}")
 
     # Check if TSL penalty requested but no TSL data
-    if args.use_tsl_penalty and not metadata.get('has_tsl_data', False):
+    if args.use_tsl_penalty and not metadata.get("has_tsl_data", False):
         logging.warning("--use_tsl_penalty specified but annotation has no TSL data")
         logging.warning("TSL penalties will not be applied")
         args.use_tsl_penalty = False
-    
+
     # Initialize pipeline context with new data
     pipeline_context = {
-        'junction_map': junction_map,
-        'junction_string_to_int': junction_string_to_int,
-        'junction_int_to_string': junction_int_to_string,
-        'transcript_junction_order' : transcript_junction_order if (args.use_junction_completeness or args.use_subset_penalty) else None,
-        'cached_results': {},
-        'global_thresholds': None,
-        'gene_map': gene_map,
-        'te_map': te_map,
-        'transcript_info': transcript_info,  # Includes TSL and transcript lengths
-        'transcript_expected_junctions': transcript_expected_junctions,  # Not sure if needed anymore
-        'subset_relationships': subset_relationships,  # For competition analysis
-        'splice_competitor_map': splice_competitor_map,  # For competition analysis
-        'exon_index': exon_index,
-        'junction_unstranded': junction_unstranded,
-        'annotation_metadata': metadata
+        "junction_map": junction_map,
+        "junction_string_to_int": junction_string_to_int,
+        "junction_int_to_string": junction_int_to_string,
+        "transcript_junction_order": (
+            transcript_junction_order
+            if (args.use_junction_completeness or args.use_subset_penalty)
+            else None
+        ),
+        "cached_results": {},
+        "global_thresholds": None,
+        "gene_map": gene_map,
+        "te_map": te_map,
+        "transcript_info": transcript_info,  # Includes TSL and transcript lengths
+        "transcript_expected_junctions": transcript_expected_junctions,  # Not sure if needed anymore
+        "subset_relationships": subset_relationships,  # For competition analysis
+        "splice_competitor_map": splice_competitor_map,  # For competition analysis
+        "exon_index": exon_index,
+        "junction_unstranded": junction_unstranded,
+        "annotation_metadata": metadata,
     }
-    
-    
+
     # Initialize cache manager if using cache
     if args.use_cache or args.rebuild_cache:
         cache_manager = PipelineCache(args.cache_dir)
-        pipeline_context['cache_manager'] = cache_manager
+        pipeline_context["cache_manager"] = cache_manager
         logging.info(f"Cache manager initialized with directory: {args.cache_dir}")
-    
-    
+
     # Run pipeline
     with tempfile.TemporaryDirectory(dir=args.tempdir) as temp_dir:
         logging.info(f"Using temporary directory: {temp_dir}")
-        
+
         # Run optimized pipeline with integer IDs. The GTFs named in the
         # annotation are not needed here: everything quantification uses is in
         # the precomputed pickle (only the fallback for old v1 pickles re-reads them).
         results = run_joint_em_pipeline_encoded(
             pipeline_context, args, temp_dir, string_to_int, int_to_string
         )
-        
+
         if results[0] is None:
             logging.error("Joint EM pipeline failed")
             sys.exit(1)
 
-        (final_unique_counts, final_multimapper_counts, final_total_counts,
-            confidence_results, distinguishability_results, junction_confidence_results,
-            pre_em_total_counts, sample_length_vectors) = results
-        
-        run_file_map = {}  # per-sample output files; filled in when confidence outputs are written
+        (
+            final_unique_counts,
+            final_multimapper_counts,
+            final_total_counts,
+            confidence_results,
+            distinguishability_results,
+            junction_confidence_results,
+            pre_em_total_counts,
+            sample_length_vectors,
+        ) = results
+
+        run_file_map = (
+            {}
+        )  # per-sample output files; filled in when confidence outputs are written
         # Save enhanced confidence metrics
-        if args.output_confidence or pipeline_context['junction_map']:
+        if args.output_confidence or pipeline_context["junction_map"]:
             logging.info("Saving comprehensive confidence metrics in parallel...")
-            
+
             # Convert DataFrame columns to list of Series for compatibility
-            total_results = [final_total_counts[col] for col in final_total_counts.columns]
-            
+            total_results = [
+                final_total_counts[col] for col in final_total_counts.columns
+            ]
+
             # Create gene_to_transcripts_map with INTEGER LocusIDs
             gene_to_transcripts_map = None
-            if pipeline_context['junction_map']:
-                gene_map = pipeline_context['gene_map']
+            if pipeline_context["junction_map"]:
+                gene_map = pipeline_context["gene_map"]
                 if gene_map is not None:
                     # This creates a map with integer transcript IDs!
-                    gene_to_transcripts_map = gene_map.groupby('AggregateID')['LocusID'].apply(list).to_dict()
+                    gene_to_transcripts_map = (
+                        gene_map.groupby("AggregateID")["LocusID"].apply(list).to_dict()
+                    )
 
             # Prepare arguments for parallel saving
             pool_args = []
             for i, sample_counts in enumerate(total_results):
                 sample_name = sample_counts.name
-                sample_pre_em_total_counts=pre_em_total_counts[i]
+                sample_pre_em_total_counts = pre_em_total_counts[i]
                 # Get the per-sample junction metrics
-                sample_junction_metrics = pipeline_context['cached_results'].get(sample_name, {}).get('junction_metrics', {})
+                sample_junction_metrics = (
+                    pipeline_context["cached_results"]
+                    .get(sample_name, {})
+                    .get("junction_metrics", {})
+                )
 
                 # THE REFINED args_tuple:
                 # We pass all the DYNAMIC per-sample data and the SMALL, STATIC config flags.
@@ -2121,8 +2858,8 @@ def main():
                     gene_to_transcripts_map,
                     args.prefix,
                     args.verbose_output,
-                    int_to_string, 
-                    junction_int_to_string 
+                    int_to_string,
+                    junction_int_to_string,
                 )
                 pool_args.append(args_tuple)
 
@@ -2130,83 +2867,118 @@ def main():
             # The initargs EXACTLY match the signature of init_worker_downstream.
             if args.output_confidence:
                 with multiprocessing.Pool(
-                    processes=min(args.threads, len(total_results))) as pool:
+                    processes=min(args.threads, len(total_results))
+                ) as pool:
                     # The pool.map call remains the same, passing the list of tuples
-                    parallel_results = pool.map(process_and_save_sample_outputs, pool_args)
-            
+                    parallel_results = pool.map(
+                        process_and_save_sample_outputs, pool_args
+                    )
+
                 parallel_confidence_results = [res[0] for res in parallel_results]
 
                 run_file_map = {}
                 sample_names_from_run = [res[1] for res in parallel_results]
-                
+
                 for sample_name in sample_names_from_run:
                     # The main process now constructs all the paths.
                     # This is the single source of truth for naming conventions.
                     run_file_map[sample_name] = {
-                        "priors": os.path.abspath(f"{args.prefix}_{sample_name}_prior_adjustments.tsv.gz"),
-                        "metrics_sparse": os.path.abspath(f"{args.prefix}_{sample_name}_transcript_metrics_SPARSE.tsv.gz"),
-                        "confidence_dense": os.path.abspath(f"{args.prefix}_{sample_name}_counts_with_confidence.tsv.gz"),
-                        "high_confidence": os.path.abspath(f"{args.prefix}_{sample_name}_high_confidence_counts.tsv.gz")   
-                        }
+                        "priors": os.path.abspath(
+                            f"{args.prefix}_{sample_name}_prior_adjustments.tsv.gz"
+                        ),
+                        "metrics_sparse": os.path.abspath(
+                            f"{args.prefix}_{sample_name}_transcript_metrics_SPARSE.tsv.gz"
+                        ),
+                        "confidence_dense": os.path.abspath(
+                            f"{args.prefix}_{sample_name}_counts_with_confidence.tsv.gz"
+                        ),
+                        "high_confidence": os.path.abspath(
+                            f"{args.prefix}_{sample_name}_high_confidence_counts.tsv.gz"
+                        ),
+                    }
 
                 # Create comprehensive transcript confidence summary
-                if parallel_confidence_results and any(r is not None for r in parallel_confidence_results):
-                    transcript_summary = pd.concat([r for r in parallel_confidence_results if r is not None], axis=1)
-                    
+                if parallel_confidence_results and any(
+                    r is not None for r in parallel_confidence_results
+                ):
+                    transcript_summary = pd.concat(
+                        [r for r in parallel_confidence_results if r is not None],
+                        axis=1,
+                    )
+
                     # Decode the integer transcript IDs to strings for the output file
-                    transcript_summary = decode_transcript_ids(transcript_summary, int_to_string)
-                    
+                    transcript_summary = decode_transcript_ids(
+                        transcript_summary, int_to_string
+                    )
+
                     output_file = f"{args.prefix}_transcript_confidence_summary.tsv.gz"
-                    transcript_summary.to_csv(output_file, sep='\t', compression={'method': 'gzip', 'compresslevel': 1})
-                    logging.info(f"✅ Saved transcript confidence summary for {len(parallel_confidence_results)} samples")
+                    transcript_summary.to_csv(
+                        output_file,
+                        sep="\t",
+                        compression={"method": "gzip", "compresslevel": 1},
+                    )
+                    logging.info(
+                        f"✅ Saved transcript confidence summary for {len(parallel_confidence_results)} samples"
+                    )
             else:
-                logging.info("Skipping confidence metrics output as --output_confidence is not set.")
-                run_file_map = {}         
+                logging.info(
+                    "Skipping confidence metrics output as --output_confidence is not set."
+                )
+                run_file_map = {}
 
             if args.output_tpm:
                 logging.info("Calculating TPM values from final counts...")
                 tpm_df = calculate_tpm(final_total_counts, sample_length_vectors)
                 decoded_tpm_df = decode_transcript_ids(tpm_df, int_to_string)
                 tpm_filepath = f"{args.prefix}_total_EM_TPM.tsv"
-                decoded_tpm_df.round(6).to_csv(tpm_filepath, sep='\t')
+                decoded_tpm_df.round(6).to_csv(tpm_filepath, sep="\t")
                 logging.info(f"Final TPM estimates saved to: {tpm_filepath}")
 
             if args.analyze_competition:
                 summary, complex_genes = analyze_competition_patterns(
-                    distinguishability_results, 
-                    args.prefix, int_to_string=int_to_string,
-                    )
-            
-        
+                    distinguishability_results,
+                    args.prefix,
+                    int_to_string=int_to_string,
+                )
+
         # --- AGGREGATION STEP ---
         logging.info("Aggregating final counts by gene symbol and TE subfamily...")
-        gene_map = pipeline_context['gene_map']
-        te_map = pipeline_context['te_map']
+        gene_map = pipeline_context["gene_map"]
+        te_map = pipeline_context["te_map"]
 
         # Emit genomic coordinates for each individual TE locus (opt-in; ~4.7M rows for hg38 rmsk)
         if te_map is not None and args.te_coordinates:
             write_te_locus_coordinates(
-                pipeline_context.get('transcript_info'), int_to_string, te_map, args.prefix
+                pipeline_context.get("transcript_info"),
+                int_to_string,
+                te_map,
+                args.prefix,
             )
 
         if gene_map is not None:
-            final_aggregated_counts = _aggregate_genes_and_tes(final_total_counts, gene_map, te_map)
+            final_aggregated_counts = _aggregate_genes_and_tes(
+                final_total_counts, gene_map, te_map
+            )
 
             if not final_aggregated_counts.empty:
                 agg_filepath = f"{args.prefix}_total_EM_aggregated_counts.tsv"
-                final_aggregated_counts.to_csv(agg_filepath, sep='\t')
-                logging.info(f"Final aggregated counts saved to: {agg_filepath} ({len(final_aggregated_counts)} groups)")
+                final_aggregated_counts.to_csv(agg_filepath, sep="\t")
+                logging.info(
+                    f"Final aggregated counts saved to: {agg_filepath} ({len(final_aggregated_counts)} groups)"
+                )
             else:
                 logging.error("No aggregated counts to save!")
 
             # Gene/TE level TPM aggregation
             if not final_aggregated_counts.empty and args.output_tpm:
                 logging.info("Aggregating TPMs by gene symbol and TE subfamily...")
-                final_aggregated_tpm = _aggregate_genes_and_tes(tpm_df, gene_map, te_map)
+                final_aggregated_tpm = _aggregate_genes_and_tes(
+                    tpm_df, gene_map, te_map
+                )
 
                 if not final_aggregated_tpm.empty:
                     agg_tpm_filepath = f"{args.prefix}_total_EM_aggregated_TPM.tsv"
-                    final_aggregated_tpm.to_csv(agg_tpm_filepath, sep='\t')
+                    final_aggregated_tpm.to_csv(agg_tpm_filepath, sep="\t")
                     logging.info(f"Final aggregated TPMs saved to: {agg_tpm_filepath}")
 
             # Add group confidence metrics (using integer versions)
@@ -2216,64 +2988,74 @@ def main():
                     group_metrics = run_group_confidence_from_pipeline_parallel_optimized(
                         final_total_counts=final_total_counts,  # Integer IDs
                         final_aggregated_counts=final_aggregated_counts,
-                        confidence_results=confidence_results,  # Integer IDs  
+                        confidence_results=confidence_results,  # Integer IDs
                         distinguishability_results=distinguishability_results,  # Integer IDs
                         junction_confidence_results=junction_confidence_results,  # Integer IDs
                         gene_map=gene_map,  # Integer IDs
                         te_map=te_map,  # Integer IDs
                         args=args,
                         int_to_string=int_to_string,
-                        string_to_int=string_to_int
+                        string_to_int=string_to_int,
                     )
                 except Exception as e:
                     logging.error(f"Failed to calculate group confidence metrics: {e}")
                     import traceback
+
                     traceback.print_exc()
         else:
-            logging.error("Could not perform final aggregation due to GTF parsing errors.")
-       
-    
+            logging.error(
+                "Could not perform final aggregation due to GTF parsing errors."
+            )
+
     # Write the run manifest on every run. It records the version and the EqC
     # builder (provenance) as well as the files majec_build_db ingests. Without
     # caching, cache_files is empty and majec_build_db skips the junction tables.
     manifest_path = f"{args.prefix}_run_manifest.json"
     manifest_data = {
-        'run_prefix': args.prefix,
-        'majec_version': MAJEC_VERSION,
-        'eqc_builder': eqc_builder_info,
-        'run_timestamp_utc': datetime.now(timezone.utc).isoformat(),
-        'annotation_file': os.path.abspath(args.annotation),
-        'cache_files': pipeline_context.get('cache_path_manifest') or {},
-        'summary_files': {
-            'transcript_counts': os.path.abspath(f"{args.prefix}_total_EM_counts.tsv"),
-            'transcript_tpm': os.path.abspath(f"{args.prefix}_total_EM_TPM.tsv"),
-            'aggregated_counts': os.path.abspath(f"{args.prefix}_total_EM_aggregated_counts.tsv"),
-            'aggregated_tpm': os.path.abspath(f"{args.prefix}_total_EM_aggregated_TPM.tsv"),
-            'group_confidence': os.path.abspath(f"{args.prefix}_group_confidence_comprehensive.tsv.gz")
-             },
-
-        'per_sample_files': run_file_map
-        }
+        "run_prefix": args.prefix,
+        "majec_version": MAJEC_VERSION,
+        "eqc_builder": eqc_builder_info,
+        "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "annotation_file": os.path.abspath(args.annotation),
+        "cache_files": pipeline_context.get("cache_path_manifest") or {},
+        "summary_files": {
+            "transcript_counts": os.path.abspath(f"{args.prefix}_total_EM_counts.tsv"),
+            "transcript_tpm": os.path.abspath(f"{args.prefix}_total_EM_TPM.tsv"),
+            "aggregated_counts": os.path.abspath(
+                f"{args.prefix}_total_EM_aggregated_counts.tsv"
+            ),
+            "aggregated_tpm": os.path.abspath(
+                f"{args.prefix}_total_EM_aggregated_TPM.tsv"
+            ),
+            "group_confidence": os.path.abspath(
+                f"{args.prefix}_group_confidence_comprehensive.tsv.gz"
+            ),
+        },
+        "per_sample_files": run_file_map,
+    }
     if args.te_coordinates:
-        manifest_data['summary_files']['te_locus_coordinates'] = os.path.abspath(
-            f"{args.prefix}_TE_locus_coordinates.tsv")
+        manifest_data["summary_files"]["te_locus_coordinates"] = os.path.abspath(
+            f"{args.prefix}_TE_locus_coordinates.tsv"
+        )
     # Add error handling in case some files weren't generated
-    for key, path in manifest_data['summary_files'].items():
+    for key, path in manifest_data["summary_files"].items():
         if not os.path.exists(path):
-            logging.warning(f"Manifest warning: summary file for '{key}' not found at '{path}'.")
+            logging.warning(
+                f"Manifest warning: summary file for '{key}' not found at '{path}'."
+            )
 
-    with open(manifest_path, 'w') as f:
-        json.dump(manifest_data, f, indent=4) # Use indent=4 for better readability
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_data, f, indent=4)  # Use indent=4 for better readability
     logging.info(f"✅ Saved COMPLETE run manifest to: {manifest_path}")
 
     elapsed_time = time.time() - start_time
     logging.info(f"\n=== PIPELINE COMPLETED IN {elapsed_time/60:.1f} minutes ===")
-    logging.info(f"Junction-aware: {'Yes' if pipeline_context['junction_map'] else 'No'}")
+    logging.info(
+        f"Junction-aware: {'Yes' if pipeline_context['junction_map'] else 'No'}"
+    )
     logging.info(f"Annotation: {os.path.basename(args.annotation)}")
     logging.info(f"Transcripts: {len(int_to_string):,}")
-  
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
