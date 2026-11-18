@@ -24,13 +24,14 @@ except ImportError:
     )
 
 
+# pypdf (the maintained successor of PyPDF2) joins the per-sample PDF pages of
+# the multi-panel reports; only --save_pdf needs it, and main() says so then.
 try:
-    from PyPDF2 import PdfMerger
+    from pypdf import PdfWriter
 
-    HAVE_PYPDF2 = True
+    HAVE_PYPDF = True
 except ImportError:
-    HAVE_PYPDF2 = False
-    print("WARNING: PyPDF2 not installed. PDF merging will be disabled.")
+    HAVE_PYPDF = False
 
 
 # ==============================================================================
@@ -3056,22 +3057,22 @@ def export_figures_as_svg_archive(figures, sample_names, zip_path, gene_id):
     return zip_path
 
 
-def create_combined_pdf(figures, sample_names, output_file):
-    """Create combined PDF without temp files."""
-    merger = PdfMerger()
-
-    for fig, name in zip(figures, sample_names):
-        # Create PDF in memory
-        pdf_bytes = fig.to_image(format="pdf", width=1600, height=1000)
-        pdf_buffer = io.BytesIO(pdf_bytes)
-        merger.append(pdf_buffer)
-
-    # Write final PDF
+def merge_pdfs(pdf_blobs, output_file):
+    """Concatenate in-memory PDFs (bytes), in order, into one file."""
+    writer = PdfWriter()
+    for blob in pdf_blobs:
+        writer.append(io.BytesIO(blob))
     with open(output_file, "wb") as f:
-        merger.write(f)
-    merger.close()
-
+        writer.write(f)
     return output_file
+
+
+def create_combined_pdf(figures, sample_names, output_file):
+    """One PDF with a page per figure, rendered in memory (no temp files)."""
+    return merge_pdfs(
+        [fig.to_image(format="pdf", width=1600, height=1000) for fig in figures],
+        output_file,
+    )
 
 
 def export_data_to_excel(aggregated_data, norm_data, output_file="analysis_data.xlsx"):
@@ -3427,6 +3428,13 @@ def main():
     args = parser.parse_args()
     args = normalize_args_paths(args)
 
+    if args.save_pdf and not HAVE_PYPDF:
+        print(
+            "WARNING: --save_pdf needs pypdf (in the viz extra: pip install 'majec[viz]') "
+            "to join the multi-panel reports into one PDF; those combined PDFs will be "
+            "skipped."
+        )
+
     # 1. Connect to DB
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
 
@@ -3521,7 +3529,7 @@ def main():
             f"All individual sample penalty heatmaps saved to: {penalty_heatmap_save_path}"
         )
 
-    if args.save_pdf and HAVE_PYPDF2 and STATIC_EXPORT_AVAILABLE:
+    if args.save_pdf and HAVE_PYPDF and STATIC_EXPORT_AVAILABLE:
         pdf_save_path = (
             f"{args.output_dir}/{raw_data['gene_id']}_all_samples_penalty_heatmaps.pdf"
         )
@@ -3594,7 +3602,7 @@ def main():
                 f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_junction_plots.zip",
                 raw_data["gene_id"],
             )
-        if args.save_pdf and HAVE_PYPDF2 and STATIC_EXPORT_AVAILABLE:
+        if args.save_pdf and HAVE_PYPDF and STATIC_EXPORT_AVAILABLE:
             pdf_save_path = f"{args.output_dir}/{raw_data['gene_id']}_all_subsets_junction_plots.pdf"
             create_combined_pdf(
                 junction_figures,

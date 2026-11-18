@@ -62,7 +62,7 @@ Extras can be combined, for example `pip install "majec[rust,full_analysis]"`.
 |---|---|---|
 | `rust` | majec-core | the compiled builder |
 | `database` | polars | `majec_build_db` |
-| `viz` | plotly, kaleido, pypdf2, xlsxwriter | `majec_visualize` (kaleido for SVG/PDF export, pypdf2 for merged PDFs, xlsxwriter for `--export_excel`) |
+| `viz` | plotly, kaleido, pypdf, xlsxwriter | `majec_visualize` (kaleido for SVG/PDF export, pypdf for merged PDFs, xlsxwriter for `--export_excel`) |
 | `full_analysis` | everything in `database` and `viz` | all downstream tools |
 
 `majec_run_pipeline`, `majec_precompute_annotations`, `majec_add_norm_factors` and `majec_prepare_deseq2` need only the core dependencies. Running the R scripts that `majec_prepare_deseq2` generates needs R with the Bioconductor packages DESeq2 and genefilter.
@@ -88,7 +88,7 @@ For the pure-Python builder only, run `pip install -e .` as the last step instea
 `majec.yml` creates an environment named `majec` containing:
 
 - Python 3.11, numpy, pandas, scipy, polars and pysam;
-- the optional visualization libraries: plotly, python-kaleido, pypdf2, xlsxwriter;
+- the optional visualization libraries: plotly, python-kaleido, pypdf, xlsxwriter;
 - the external tools samtools, Subread (featureCounts) and sqlite.
 
 So no extra beyond `rust` is needed in this environment. The `-e` (editable) install links to the cloned source, so `git pull` updates MAJEC without reinstalling. Rebuild majec-core if its source changes (see below).
