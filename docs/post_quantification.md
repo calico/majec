@@ -11,7 +11,7 @@ After `majec_run_pipeline`, four tools take results from one or more runs throug
 
 - **Python extras.**
   - `majec_build_db` needs polars, from the `database` extra.
-  - `majec_visualize` needs the `viz` extra (plotly, python-kaleido, pypdf2, xlsxwriter).
+  - `majec_visualize` needs the `viz` extra (plotly, kaleido, pypdf, xlsxwriter).
   - `full_analysis` installs both. See [installation.md](installation.md).
 - **sqlite3.** `majec_build_db` calls the `sqlite3` command-line program, so it must be on your `PATH`.
 - **R.** Running the generated DESeq2 script needs the Bioconductor packages DESeq2, apeglm and genefilter:
@@ -281,7 +281,7 @@ majec_visualize \
 | `--group_B_str` / `--group_B_file` | Group B, as above. |
 | `--delta_psi_bootstrap` | Bootstrap iterations for ΔPSI confidence intervals (default 1000). |
 | `--save_svg` | Also save SVG files. Needs kaleido and Chrome (see below). |
-| `--save_pdf` | Also save PDF files. Needs kaleido and Chrome (see below), plus PyPDF2 for the combined multi-page PDFs. |
+| `--save_pdf` | Also save PDF files. Needs kaleido and Chrome (see below), plus pypdf for the combined multi-page PDFs. |
 | `--export_excel` | Write a companion spreadsheet with the raw and aggregated data. Needs xlsxwriter. |
 | `--include_related_genes` | Also run the report for every gene that shares a junction with the query gene. |
 

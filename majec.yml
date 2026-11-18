@@ -46,7 +46,7 @@ dependencies:
   # --- Python Libraries for Optional Features ---
   - plotly=6.3.0
   - python-kaleido=1.0.0
-  - pypdf2=3.0.1
+  - pypdf>=6.21.4
   - xlsxwriter
 
   # --- Pip for local package installation ---

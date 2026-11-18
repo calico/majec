@@ -37,7 +37,7 @@ pysam = ">=0.22"   # pure-Python EqC builder; always available, so a plain insta
 polars = { version = ">=1.33", optional = true }
 plotly = { version = ">=6.3", optional = true }
 kaleido = { version = ">=1.0", optional = true }
-pypdf2 = { version = ">=3.0", optional = true }
+pypdf = { version = ">=6.21.4", optional = true }
 xlsxwriter = { version = ">=3.1", optional = true }
 # Compiled EqC builder (Rust, prebuilt wheels): the same results as the pysam
 # builder with a roughly 6x faster BAM scan. Optional, so a plain `pip install
@@ -52,9 +52,9 @@ majec-core = { version = ">=0.2.0", optional = true }
 [tool.poetry.extras]
 rust = ["majec-core"]
 database = ["polars"]
-viz = ["plotly", "kaleido", "pypdf2", "xlsxwriter"]
+viz = ["plotly", "kaleido", "pypdf", "xlsxwriter"]
 tools = []  # kept so `majec[tools]` still resolves; scipy is now a core dependency
-full_analysis = ["polars", "plotly", "kaleido", "pypdf2", "xlsxwriter"]
+full_analysis = ["polars", "plotly", "kaleido", "pypdf", "xlsxwriter"]
 
 # --- DEV DEPENDENCIES (not published to PyPI) ---
 # A group, not an extra: extras are published in the wheel's metadata, so

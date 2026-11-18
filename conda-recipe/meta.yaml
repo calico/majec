@@ -51,7 +51,7 @@ requirements:
     # Uncomment if you want these installed by default:
     # - plotly >=6.3
     # - python-kaleido >=1.0
-    # - pypdf2 >=3.0
+    # - pypdf >=6.21.4
     # - xlsxwriter
 
 test:
